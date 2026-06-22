@@ -1,39 +1,40 @@
 """
-client.py — Production ANPR Orchestrator v5
+client.py — Production ANPR Orchestrator v6
 ============================================
 
-Orchestrates all Phase-4 + Phase-5 modules:
+Orchestrates all Phase-4 + Phase-5 + Phase-6/7 modules:
 
-  Phase 4 (existing):
-    adaptive_fps       → Dynamic FPS (3/8/11) based on active track count
-    quality_engine     → 6-component quality score
-    direction_engine   → Virtual-line IN/OUT detection
-    window_manager     → Speed-based best frame window (3/5/8 frames)
-    track_manager      → TrackState / TrackManager registry
-    pipeline_metrics   → Stage counters: vehicle_seen → backend_saved
-    health_monitor     → /health HTTP endpoint (port 8880)
-    reflection_detector → Overexposure rejection
-    plate_validator    → Plate pixel size gate
+  Phase 4:  adaptive_fps, quality_engine, direction_engine, window_manager,
+            track_manager, pipeline_metrics, health_monitor
+  Phase 5:  auto_calibration, camera_diagnostics, alert_center, self_healing
+  Phase 6:  fleet_manager (via api_server heartbeat)
+  Phase 7:  Hikvision dual-stream (sub for detection, main for OCR snapshots)
+            camera_config    → reads cameras.json (no hardcoded URLs)
+            stream_manager   → DualStreamCapture + watchdog
 
-  Phase 5 (new):
-    auto_calibration   → Auto-adjusts thresholds every 5 min
-    camera_diagnostics → Detects lens dirt, rain, camera shift, vibration
-    alert_center       → Enterprise INFO/WARNING/CRITICAL alerts
-    self_healing       → Restarts processes, manages disk/memory
+Dual-Stream Architecture:
+  Sub Stream (Channels/102): always open, low-res
+    → YOLOv8 + ByteTrack, LiveView, diagnostics
+  Main Stream (Channels/101): on-demand only
+    → one snapshot when Best Frame Window is full → saved for OCR
 
-Environment variables (all optional with defaults):
-  CAMERA_SOURCE        0 / RTSP URL              0
-  CAMERA_ID            Camera label integer       1
-  PENDING_DIR          Frame output folder        pending_frames
-  MODEL_PATH           YOLOv8 model path          auto-detect
-  WATCHDOG_TIMEOUT     No-frame reconnect (sec)   5.0
-  VIRTUAL_LINE_Y       Virtual line position      0.5
-  MIN_QUALITY_SCORE    Quality gate (0-100)       75  (overridden by auto-cal)
-  TRACK_FORGET_SEC     Stale track timeout        30.0
-  CAM_MAX_RETRY        Max consecutive frame fails 30
-  CAM_RECONNECT_DELAY  Seconds between retries    2.0
-  HEALTH_PORT          /health endpoint port      8880
-  DIAG_INTERVAL        Camera diagnostics check (sec) 10.0
+Environment variables:
+  CAMERA_SOURCE        Fallback if cameras.json missing   0 / RTSP URL
+  CAMERA_ID            Camera label integer                1
+  HIKVISION_USERNAME   Hikvision admin username            admin
+  HIKVISION_PASSWORD   Hikvision admin password
+  HIKVISION_IP         Hikvision NVR/DVR IP                192.168.1.50
+  HIKVISION_PORT       RTSP port                           554
+  PENDING_DIR          Frame output folder                 pending_frames
+  MODEL_PATH           YOLOv8 model path                   auto-detect
+  WATCHDOG_TIMEOUT     No-frame reconnect (sec)            5.0
+  VIRTUAL_LINE_Y       Virtual line position               0.5
+  MIN_QUALITY_SCORE    Quality gate (0-100)                75
+  TRACK_FORGET_SEC     Stale track timeout                 30.0
+  CAM_MAX_RETRY        Max consecutive frame fails         30
+  CAM_RECONNECT_DELAY  Seconds between retries             2.0
+  HEALTH_PORT          /health endpoint port               8880
+  DIAG_INTERVAL        Camera diagnostics check (sec)      10.0
 """
 
 import os

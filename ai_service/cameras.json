@@ -1,0 +1,28 @@
+{
+  "vendor_defaults": {
+    "hikvision": {
+      "rtsp_port": 554,
+      "use_substream": true
+    }
+  },
+  "cameras": [
+    {
+      "camera_id": "CAM01",
+      "name": "Gate A — Entry",
+      "vendor": "hikvision",
+      "channel": 1,
+      "use_substream": true,
+      "enabled": true,
+      "notes": "Main entrance gate, facing north"
+    },
+    {
+      "camera_id": "CAM02",
+      "name": "Gate B — Exit",
+      "vendor": "hikvision",
+      "channel": 2,
+      "use_substream": true,
+      "enabled": true,
+      "notes": "Exit gate, facing south"
+    }
+  ]
+}

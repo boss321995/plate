@@ -24,3 +24,4 @@ torchvision>=0.15             # ResNet18 fingerprint extractor
 # Utils
 python-dotenv>=1.0
 pytz>=2024.1
+psutil>=5.9          # self_healing.py + health_monitor.py (Phase 5)
