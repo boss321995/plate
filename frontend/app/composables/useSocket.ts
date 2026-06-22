@@ -13,10 +13,11 @@ let _refCount = 0
 const getSocket = () => {
   if (!_socket) {
     const base = useRuntimeConfig().public.apiBase || 'http://localhost:3001'
-    _socket = io(base, {
+    _socket = io(base === '/api/plate' ? '' : base, {
       transports: ['websocket', 'polling'],
       reconnectionAttempts: 10,
       reconnectionDelay: 2000,
+      path: base === '/api/plate' ? '/api/plate/socket.io' : '/socket.io'
     })
     _socket.on('connect', () => console.log('[Socket] Connected:', _socket.id))
     _socket.on('disconnect', () => console.log('[Socket] Disconnected'))
