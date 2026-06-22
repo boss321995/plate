@@ -13,6 +13,8 @@ from fastapi import FastAPI, File, UploadFile, Header, HTTPException, Background
 from fastapi.responses import JSONResponse
 from ultralytics import YOLO
 import easyocr
+import torch
+from torchvision import models, transforms
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("API")
@@ -59,6 +61,41 @@ else:
 
 log.info("Loading EasyOCR...")
 ocr = easyocr.Reader(['th', 'en'], gpu=False)
+
+# ============================================================
+# Vehicle Fingerprint: ResNet18 Feature Extractor
+# ============================================================
+log.info("Loading ResNet18 for vehicle fingerprinting...")
+try:
+    _resnet = models.resnet18(weights='IMAGENET1K_V1')
+    _resnet.eval()
+    # ตัด classification head ออก → ใช้แค่ feature vector 512 มิติ
+    vehicle_feature_extractor = torch.nn.Sequential(*list(_resnet.children())[:-1])
+    _fp_preprocess = transforms.Compose([
+        transforms.ToPILImage(),
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    log.info("ResNet18 loaded successfully (512-dim fingerprint)")
+except Exception as e:
+    vehicle_feature_extractor = None
+    log.warning(f"Could not load ResNet18: {e}. Fingerprinting disabled.")
+
+def get_vehicle_fingerprint(vehicle_crop):
+    """แปลงรูปรถเป็น 512-dim feature vector (ลายนิ้วมือ)"""
+    if vehicle_feature_extractor is None:
+        return None
+    try:
+        # แปลง BGR (OpenCV) → RGB
+        rgb = cv2.cvtColor(vehicle_crop, cv2.COLOR_BGR2RGB)
+        tensor = _fp_preprocess(rgb).unsqueeze(0)
+        with torch.no_grad():
+            features = vehicle_feature_extractor(tensor)
+        return features.squeeze().numpy().tolist()  # → list of 512 floats
+    except Exception as e:
+        log.debug(f"Fingerprint extraction failed: {e}")
+        return None
 
 THAI_PROVINCES = [
     "กรุงเทพมหานคร", "กระบี่", "กาญจนบุรี", "กาฬสินธุ์", "กำแพงเพชร",
@@ -374,11 +411,16 @@ async def detect_frame(file: UploadFile = File(...), background_tasks: Backgroun
                                 
                         if not is_duplicate:
                             log.info(f"*** CONFIRMED: {final_plate} | {final_province} | {v_type} | สี: {v_color} ***")
+                            
+                            # สร้าง fingerprint สำหรับรถคันนี้
+                            fingerprint = get_vehicle_fingerprint(vehicle_crop)
+                            
                             payload = {
                                 "plate_number": final_plate,
                                 "province": final_province,
                                 "vehicle_type": v_type,
                                 "vehicle_color": v_color,
+                                "vehicle_fingerprint": fingerprint,
                                 "confidence_score": round(avg_conf, 4),
                                 "camera_id": 1,
                                 "timestamp": datetime.now().isoformat()

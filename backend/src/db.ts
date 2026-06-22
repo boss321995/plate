@@ -37,6 +37,7 @@ const initDb = async () => {
         vehicle_type TEXT,
         is_staff BOOLEAN DEFAULT 0,
         is_internal BOOLEAN DEFAULT 0,
+        is_blacklist BOOLEAN DEFAULT 0,
         owner_name TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
       );
@@ -59,10 +60,30 @@ const initDb = async () => {
         direction TEXT,
         confidence_score REAL,
         image_path TEXT,
+        is_fuzzy_match BOOLEAN DEFAULT 0,
+        original_ocr_text TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(vehicle_id) REFERENCES vehicles(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS vehicle_fingerprints (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        vehicle_id INTEGER NOT NULL,
+        fingerprint TEXT,
+        vehicle_color TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY(vehicle_id) REFERENCES vehicles(id)
       );
     `);
+
+    // Safe migrations for existing databases (won't error if columns exist)
+    const safeAlter = async (sql: string) => {
+      try { await sqliteDb.exec(sql); } catch (e) { /* column already exists */ }
+    };
+    await safeAlter('ALTER TABLE vehicles ADD COLUMN is_blacklist BOOLEAN DEFAULT 0');
+    await safeAlter('ALTER TABLE vehicle_logs ADD COLUMN is_fuzzy_match BOOLEAN DEFAULT 0');
+    await safeAlter('ALTER TABLE vehicle_logs ADD COLUMN original_ocr_text TEXT');
+
     console.log('SQLite Database initialized successfully.');
   }
 };

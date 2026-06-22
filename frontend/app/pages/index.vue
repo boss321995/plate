@@ -90,10 +90,14 @@
               <div class="flex items-center space-x-2">
                 <span class="font-bold text-slate-800 dark:text-white tracking-wide border border-slate-300 dark:border-white/10 px-2 py-0.5 rounded-lg text-sm bg-white/50 dark:bg-white/5 font-mono">{{ log.plate }}</span>
                 <span :class="typeColor(log.type)" class="text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider">{{ log.type }}</span>
+                <span v-if="log.isFuzzyMatch" class="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-500/20 text-amber-600 dark:text-amber-400 border border-amber-300 dark:border-amber-500/30" :title="`OCR read: ${log.originalOcr}`">
+                  🔍 Fuzzy
+                </span>
               </div>
               <p class="text-[11px] text-slate-500 mt-1.5 flex items-center">
                 <svg class="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
                 {{ log.time }}
+                <span v-if="log.isFuzzyMatch" class="ml-2 text-amber-500">• OCR: {{ log.originalOcr }}</span>
               </p>
             </div>
             <div :class="log.dir === 'IN' ? 'text-accent-emerald bg-accent-emerald/10 border-accent-emerald/20' : 'text-accent-amber bg-accent-amber/10 border-accent-amber/20'" class="w-10 h-10 rounded-xl flex items-center justify-center font-bold text-xs border">
@@ -131,6 +135,23 @@
       </div>
     </div>
   </Teleport>
+
+  <!-- Anomaly Alert Overlay (Orange - Vehicle looks different) -->
+  <Teleport to="body">
+    <div v-if="anomalyAlert.show" class="fixed inset-0 z-[100] flex items-center justify-center pointer-events-none">
+      <div class="absolute inset-0 bg-amber-600/20 animate-pulse"></div>
+      <div class="glass-strong rounded-3xl p-8 border-2 border-amber-500 shadow-[0_0_80px_rgba(245,158,11,0.4)] animate-fade-in-up text-center relative z-10 max-w-md w-full mx-4 bg-slate-900/90">
+        <div class="w-20 h-20 bg-amber-500/20 rounded-full flex items-center justify-center mx-auto mb-4 border border-amber-500/50">
+          <svg class="w-10 h-10 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
+        </div>
+        <h2 class="text-2xl font-display font-bold text-amber-500 mb-2 uppercase tracking-wider">Anomaly Detected</h2>
+        <p class="text-slate-300 text-sm mb-4">{{ anomalyAlert.message }}</p>
+        <div class="bg-black/50 border border-amber-500/30 rounded-xl py-3 px-6 inline-block font-mono text-2xl text-white font-bold tracking-widest shadow-inner">
+          {{ anomalyAlert.plate }}
+        </div>
+      </div>
+    </div>
+  </Teleport>
 </template>
 
 <script setup>
@@ -146,6 +167,7 @@ const { isDark } = useTheme()
 const { socket } = useSocket()
 
 const blacklistAlert = ref({ show: false, plate: '', dir: '' })
+const anomalyAlert = ref({ show: false, plate: '', message: '' })
 const playAlertSound = () => {
   try {
     const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3')
@@ -321,6 +343,14 @@ const handleStatsUpdate = (data) => {
   chartSeries.value = [{ name: 'Vehicles', data: newData }]
 }
 
+// ─── Realtime: Anomaly Alert (vehicle fingerprint mismatch)
+const handleAnomalyAlert = (data) => {
+  if (!data) return
+  anomalyAlert.value = { show: true, plate: data.plate, message: data.message }
+  playAlertSound()
+  setTimeout(() => { anomalyAlert.value.show = false }, 8000)
+}
+
 onMounted(async () => {
   await fetchDashboardData()
 
@@ -329,6 +359,7 @@ onMounted(async () => {
     if (!socket.value) return
     socket.value.on('new_detection', handleNewDetection)
     socket.value.on('stats_update', handleStatsUpdate)
+    socket.value.on('anomaly_alert', handleAnomalyAlert)
   }
 
   // Socket might not be ready instantly on first render
@@ -348,6 +379,7 @@ onUnmounted(() => {
   if (socket.value) {
     socket.value.off('new_detection', handleNewDetection)
     socket.value.off('stats_update', handleStatsUpdate)
+    socket.value.off('anomaly_alert', handleAnomalyAlert)
   }
 })
 </script>
