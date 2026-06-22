@@ -103,9 +103,8 @@ const fetchActiveVehicles = async () => {
       const resStats = await fetch(`${apiBase}/api/parking/stats`)
       const statsData = await resStats.json()
       if (statsData.success) {
-        stats.value[0].value = statsData.data.total
-        stats.value[1].value = statsData.data.staff
-        stats.value[2].value = statsData.data.visitor
+        // Stats are fetched but not currently used in the UI
+        console.log('Parking stats:', statsData.data)
       }
     }
   } catch (err) {
