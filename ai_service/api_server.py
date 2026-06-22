@@ -38,14 +38,24 @@ DUPLICATE_COOLDOWN = 60
 # ============================================================
 log.info("Loading YOLOv8 Models...")
 try:
-    vehicle_model = YOLO("yolov8n.pt")
+    # Use ONNX if available for faster CPU inference
+    vehicle_model_path = "yolov8n.onnx" if os.path.exists("yolov8n.onnx") else "yolov8n.pt"
+    vehicle_model = YOLO(vehicle_model_path)
+    log.info(f"Loaded vehicle model: {vehicle_model_path}")
 except Exception as e:
     log.critical(f"Cannot load YOLO vehicle model: {e}")
 
-PLATE_MODEL_PATH = "plate_detect.pt"
+# Check for plate model (ONNX or PT)
+PLATE_MODEL_PATH = "plate_detect.onnx" if os.path.exists("plate_detect.onnx") else "plate_detect.pt"
 plate_model = None
 if os.path.exists(PLATE_MODEL_PATH):
-    plate_model = YOLO(PLATE_MODEL_PATH)
+    try:
+        plate_model = YOLO(PLATE_MODEL_PATH)
+        log.info(f"Loaded plate model: {PLATE_MODEL_PATH}")
+    except Exception as e:
+        log.warning(f"Found plate model but failed to load: {e}")
+else:
+    log.info("No plate model found. Using fallback hardcoded crop.")
 
 log.info("Loading EasyOCR...")
 ocr = easyocr.Reader(['th', 'en'], gpu=False)
@@ -68,6 +78,41 @@ THAI_PROVINCES = [
     "หนองบัวลำภู", "อ่างทอง", "อำนาจเจริญ", "อุดรธานี", "อุตรดิตถ์",
     "อุทัยธานี", "อุบลราชธานี"
 ]
+
+# ============================================================
+# Low-Light Enhancement
+# ============================================================
+def is_low_light(frame):
+    """ตรวจว่าภาพมืดกว่าปกติ (ค่าเฉลี่ยสว่างน้อยกว่า 70 = กลางคืน/ห้องมืด)"""
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    mean_brightness = cv2.mean(gray)[0]
+    return mean_brightness < 70, mean_brightness
+
+def enhance_low_light(frame):
+    """
+    เพิ่มความสว่างภาพกลางคืนแบบ 3 ขั้น:
+    1. CLAHE บน L-channel (ทำให้รายละเอียดชัด ไม่ overexpose)
+    2. Gamma Correction (ดึงเงาให้สว่างขึ้น)
+    3. Denoise (ลด noise ที่มากับกลางคืน)
+    """
+    # Step 1: CLAHE บน L-channel ของ LAB color space
+    lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    l_enhanced = clahe.apply(l)
+    lab_enhanced = cv2.merge([l_enhanced, a, b])
+    result = cv2.cvtColor(lab_enhanced, cv2.COLOR_LAB2BGR)
+    
+    # Step 2: Gamma Correction (gamma < 1 = ดึงเงาให้สว่างขึ้น)
+    gamma = 1.8
+    inv_gamma = 1.0 / gamma
+    table = np.array([(i / 255.0) ** inv_gamma * 255 for i in range(256)]).astype(np.uint8)
+    result = cv2.LUT(result, table)
+    
+    # Step 3: Denoise เบาๆ เพื่อลด Grain ของกล้อง
+    result = cv2.fastNlMeansDenoisingColored(result, None, 5, 5, 7, 21)
+    
+    return result
 
 # ============================================================
 # State / Variables
@@ -219,6 +264,12 @@ async def detect_frame(file: UploadFile = File(...), background_tasks: Backgroun
     if frame is None:
         raise HTTPException(status_code=400, detail="Invalid image file")
 
+    # --- Low-Light Mode: ตรวจและปรับแสงก่อนส่ง AI ---
+    low_light, brightness = is_low_light(frame)
+    if low_light:
+        log.debug(f"[LowLight] Brightness={brightness:.1f} < 70 -> Enhancing frame...")
+        frame = enhance_low_light(frame)
+
     results = vehicle_model(frame, classes=[2, 3, 5, 7], imgsz=320, verbose=False)
     detections = []
     
@@ -233,15 +284,29 @@ async def detect_frame(file: UploadFile = File(...), background_tasks: Backgroun
             # AI ให้เหตุผลเหมือนคน: "เห็นรถประเภทนี้ สีนี้"
             v_type, v_color = get_human_like_color_and_type(vehicle_crop, class_id)
             
-            # Use fixed crop fallback (since we don't have plate_detect.pt yet)
-            h, w = vehicle_crop.shape[:2]
-            crop_x1 = x1 + int(w*0.2)
-            crop_y1 = y1 + int(h*0.55)
-            last_best_crop = vehicle_crop[int(h*0.55):int(h*0.95), int(w*0.2):int(w*0.8)]
+            # --- Plate Detection Strategy ---
+            plate_crop = None
+            if plate_model is not None:
+                # 1. ใช้โมเดลหาป้ายโดยเฉพาะ (เร็วและแม่นยำที่สุด)
+                p_results = plate_model(vehicle_crop, imgsz=160, verbose=False)
+                for pr in p_results:
+                    if len(pr.boxes) > 0:
+                        # สมมติว่าเอากล่องที่มั่นใจที่สุด
+                        best_box = max(pr.boxes, key=lambda b: b.conf[0])
+                        px1, py1, px2, py2 = map(int, best_box.xyxy[0])
+                        plate_crop = vehicle_crop[py1:py2, px1:px2]
+                        break
             
-            # OCR Processing
-            new_w, new_h = int(last_best_crop.shape[1] * OCR_UPSCALE), int(last_best_crop.shape[0] * OCR_UPSCALE)
-            enlarged = cv2.resize(last_best_crop, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+            if plate_crop is None or plate_crop.size == 0:
+                # 2. Fallback: ถ้าไม่มีโมเดล หรือโมเดลหาไม่เจอ ให้สุ่มตัดตรงกลางล่างของรถ
+                h, w = vehicle_crop.shape[:2]
+                plate_crop = vehicle_crop[int(h*0.55):int(h*0.95), int(w*0.2):int(w*0.8)]
+            
+            if plate_crop.size == 0: continue
+            
+            # OCR Processing (ตอนนี้จะเร็วขึ้นมากถ้าใช้ plate_detect.onnx ตัดมาให้ก่อน)
+            new_w, new_h = int(plate_crop.shape[1] * OCR_UPSCALE), int(plate_crop.shape[0] * OCR_UPSCALE)
+            enlarged = cv2.resize(plate_crop, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
             
             gray = cv2.cvtColor(enlarged, cv2.COLOR_BGR2GRAY)
             clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
