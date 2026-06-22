@@ -8,3 +8,4 @@ pytz
 fastapi
 uvicorn
 python-multipart
+torchvision
