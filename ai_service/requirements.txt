@@ -3,3 +3,8 @@ ultralytics
 easyocr
 requests
 python-dotenv
+playwright
+pytz
+fastapi
+uvicorn
+python-multipart

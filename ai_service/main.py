@@ -30,6 +30,50 @@ logging.basicConfig(
 )
 log = logging.getLogger("LPR")
 
+# ============================================================
+# CONFIG: Load all env vars FIRST (before any threads start)
+# ============================================================
+API_URL = os.getenv("API_URL", "http://localhost:3001/api/detect")
+CAMERA_ID = int(os.getenv("CAMERA_ID", 1))
+
+_source = os.getenv("CAMERA_SOURCE", "0")
+CAMERA_SOURCE = int(_source) if str(_source).isdigit() else _source
+
+# ============================================================
+# CONFIG: Tunable thresholds
+# ============================================================
+TEST_MODE = os.getenv("TEST_MODE", "false").lower() == "true"  # FIX: was hardcoded
+                                  # Set TEST_MODE=true in .env to skip YOLO (paper plate testing)
+PLATE_CONF_THRESHOLD = 0.4       # Min conf for plate (Lowered for outdoor demo lighting)
+PROVINCE_CONF_THRESHOLD = 0.6    # Min conf for province (Lowered for outdoor demo)
+PROCESS_EVERY_N_FRAMES = 3       # Run YOLO every 3 frames (was 5) -> faster green box
+YOLO_IMG_SIZE = 320               # Shrink YOLO input (640->320) -> 4x faster inference
+OCR_UPSCALE = 1.5                 # OCR upscale factor (was 2.0) -> faster OCR
+INSTANT_SEND_THRESHOLD = 0.85    # If conf >= this, skip multi-frame wait and send now
+DISPLAY_DURATION = 3.0            # Seconds to keep red box on screen
+GLOBAL_COOLDOWN = 5               # Seconds between API sends
+DUPLICATE_COOLDOWN = 60           # Seconds to treat similar plates as duplicate
+MULTI_FRAME_VOTES_NEEDED = 2     # How many frames must agree before we send
+DEBOUNCE_WINDOW = 8.0            # Seconds window for multi-frame voting
+PLATE_MODEL_PATH = os.getenv("PLATE_MODEL_PATH", "plate_detect.pt")  # 2nd-stage YOLO for plate region
+
+# FIX: Debug disk management — limit number of saved debug folders
+SAVE_DEBUG_IMAGES = os.getenv("SAVE_DEBUG_IMAGES", "true").lower() == "true"
+MAX_DEBUG_FOLDERS = int(os.getenv("MAX_DEBUG_FOLDERS", 200))
+
+# Camera reconnect settings
+CAM_MAX_RETRY = 30   # read() failures before triggering reconnect
+CAM_RECONNECT_DELAY = 2.0  # seconds between reconnect attempts
+
+# ============================================================
+# DEBUG: Directory to save cropped plate images
+# ============================================================
+DEBUG_DIR = os.path.join(os.path.dirname(__file__), "debug_plates")
+os.makedirs(DEBUG_DIR, exist_ok=True)
+
+# ============================================================
+# Offline Send Queue (started AFTER API_URL is defined)
+# ============================================================
 send_queue = queue.Queue()
 
 def process_offline_queue():
@@ -39,7 +83,8 @@ def process_offline_queue():
             success = False
             for attempt in range(3):
                 try:
-                    res = requests.post(API_URL, json=payload, timeout=3)
+                    headers = {"X-API-Key": os.getenv("API_KEY", "")}
+                    res = requests.post(API_URL, json=payload, headers=headers, timeout=3)
                     if res.status_code == 200:
                         success = True
                         log.info(f"-> Sent offline payload successfully: {payload.get('plate_number')}")
@@ -55,25 +100,30 @@ def process_offline_queue():
             log.error(f"Error in offline queue processing: {e}", exc_info=True)
             time.sleep(5)
 
+# FIX: Thread started AFTER API_URL is defined
 threading.Thread(target=process_offline_queue, daemon=True).start()
 
 def send_with_retry(payload, retries=3):
     for attempt in range(retries):
         try:
-            res = requests.post(API_URL, json=payload, timeout=3)
+            headers = {"X-API-Key": os.getenv("API_KEY", "")}
+            res = requests.post(API_URL, json=payload, headers=headers, timeout=3)
             if res.status_code == 200:
                 return True
         except Exception:
             time.sleep(0.5 * (attempt + 1))
-    
+
     log.warning(f"Backend unreachable, queued: {payload}")
     send_queue.put(payload)
     return False
 
 
+# ===========================================================# Health Heartbeat removed as it causes 404 warnings when pinging /detect/ping()
+
+
 def preprocess_plate(crop):
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-    
+
     # Deskew: แก้ป้ายเอียง
     coords = np.column_stack(np.where(gray < 200))
     if len(coords) > 10:
@@ -83,7 +133,7 @@ def preprocess_plate(crop):
             M = cv2.getRotationMatrix2D(
                 (gray.shape[1]//2, gray.shape[0]//2), angle, 1.0)
             gray = cv2.warpAffine(gray, M, gray.shape[1::-1])
-    
+
     # Sharpen
     kernel = np.array([[0,-1,0],[-1,5,-1],[0,-1,0]])
     return cv2.filter2D(gray, -1, kernel)
@@ -103,44 +153,17 @@ def get_thai_font(size):
             continue
     return ImageFont.load_default()
 
-API_URL = os.getenv("API_URL", "http://localhost:3001/api/detect")
-CAMERA_ID = int(os.getenv("CAMERA_ID", 1))
-
-_source = os.getenv("CAMERA_SOURCE", "0")
-CAMERA_SOURCE = int(_source) if str(_source).isdigit() else _source
 
 # ============================================================
-# CONFIG: Tunable thresholds
-# ============================================================
-TEST_MODE = False                 # True = skip YOLO, scan center of frame (for paper plate testing)
-                                  # False = normal mode (detect vehicles first, then read plate)
-PLATE_CONF_THRESHOLD = 0.4       # Min conf for plate (Lowered for outdoor demo lighting)
-PROVINCE_CONF_THRESHOLD = 0.6    # Min conf for province (Lowered for outdoor demo)
-PROCESS_EVERY_N_FRAMES = 3       # Run YOLO every 3 frames (was 5) -> faster green box
-YOLO_IMG_SIZE = 320               # Shrink YOLO input (640->320) -> 4x faster inference
-OCR_UPSCALE = 1.5                 # OCR upscale factor (was 2.0) -> faster OCR
-INSTANT_SEND_THRESHOLD = 0.85    # If conf >= this, skip multi-frame wait and send now
-DISPLAY_DURATION = 3.0            # Seconds to keep red box on screen
-GLOBAL_COOLDOWN = 5               # Seconds between API sends
-DUPLICATE_COOLDOWN = 60           # Seconds to treat similar plates as duplicate
-MULTI_FRAME_VOTES_NEEDED = 2     # How many frames must agree before we send
-DEBOUNCE_WINDOW = 8.0            # Seconds window for multi-frame voting
-PLATE_MODEL_PATH = os.getenv("PLATE_MODEL_PATH", "plate_detect.pt")  # 2nd-stage YOLO for plate region
-
-# ============================================================
-# DEBUG: Directory to save cropped plate images
-# ============================================================
-DEBUG_DIR = os.path.join(os.path.dirname(__file__), "debug_plates")
-os.makedirs(DEBUG_DIR, exist_ok=True)
-
-# ============================================================
-# Initialize Models
+# Initialize Models (with proper guard + exit on failure)
 # ============================================================
 log.info("Loading YOLOv8 Models...")
 try:
     vehicle_model = YOLO("yolov8n.pt")
 except Exception as e:
-    log.error(f"Error loading YOLO vehicle model: {e}", exc_info=True)
+    # FIX: Critical failure — cannot continue without vehicle model
+    log.critical(f"Cannot load YOLO vehicle model: {e}. Exiting.")
+    raise SystemExit(1)
 
 # 2nd-stage: Plate detection model (optional but recommended)
 plate_model = None
@@ -208,7 +231,7 @@ def match_province(raw_text):
     """
     Smart province matching from raw OCR text.
     Works on text WITH vowels/tone marks intact.
-    
+
     Examples:
       'สขลา'           -> 'สงขลา'       (missing ง)
       'กรุงเทพมหานค'    -> 'กรุงเทพมหานคร' (missing ร)
@@ -216,25 +239,25 @@ def match_province(raw_text):
       'นนทบร'           -> 'นนทบุรี'      (missing vowel)
     """
     cleaned = clean_for_province(raw_text)
-    
+
     # Must be at least 3 Thai characters and no digits in original
     if len(cleaned) < 3 or any(c.isdigit() for c in raw_text):
         return None
-    
+
     # 1. Exact match
     if cleaned in THAI_PROVINCES:
         return cleaned
-    
+
     # 2. Fuzzy match using SequenceMatcher (better than get_close_matches for missing chars)
     best_match = None
     best_ratio = 0
-    
+
     for province in THAI_PROVINCES:
         ratio = difflib.SequenceMatcher(None, cleaned, province).ratio()
         if ratio > best_ratio:
             best_ratio = ratio
             best_match = province
-    
+
     # 3. Also check if the cleaned text is a substring of a province (handles truncation)
     for province in THAI_PROVINCES:
         if len(cleaned) >= 3 and cleaned in province:
@@ -242,11 +265,11 @@ def match_province(raw_text):
             if best_ratio < 0.8:  # Only override if fuzzy wasn't already great
                 best_match = province
                 best_ratio = 0.85
-    
+
     # Accept if similarity >= 50% (generous for OCR typos)
     if best_ratio >= 0.5:
         return best_match
-    
+
     return None
 
 def put_thai_text(img, text, position, font_size=32, color=(0, 0, 255)):
@@ -259,14 +282,42 @@ def put_thai_text(img, text, position, font_size=32, color=(0, 0, 255)):
     draw.text(position, text, font=font, fill=rgb_color)
     return cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
 
+def rotate_debug_folder(debug_dir, max_folders):
+    """
+    FIX: Prevent disk full — keep only the newest `max_folders` debug folders.
+    Deletes oldest folders when limit is exceeded.
+    """
+    try:
+        folders = sorted(
+            [f for f in os.scandir(debug_dir) if f.is_dir()],
+            key=lambda x: x.stat().st_mtime
+        )
+        while len(folders) >= max_folders:
+            oldest = folders.pop(0)
+            for f in os.scandir(oldest.path):
+                os.remove(f.path)
+            os.rmdir(oldest.path)
+            log.debug(f"Rotated debug folder: {oldest.name}")
+    except Exception as e:
+        log.warning(f"Debug folder rotation error: {e}")
+
 def save_debug_images(original_frame, cropped_plate, plate_text, province_text, confidence):
     """
     Save debug images for later analysis:
-    - original_frame.jpg
-    - cropped_plate.jpg
+    - frame.jpg
+    - plate_crop.jpg
     - result.json (OCR text + confidence)
+
+    FIX: Skipped entirely if SAVE_DEBUG_IMAGES=false.
+    FIX: Rotates oldest folders when MAX_DEBUG_FOLDERS is exceeded.
     """
+    if not SAVE_DEBUG_IMAGES:
+        return
+
     try:
+        # FIX: Rotate old folders before saving new one
+        rotate_debug_folder(DEBUG_DIR, MAX_DEBUG_FOLDERS)
+
         ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         folder = os.path.join(DEBUG_DIR, f"{ts}_{plate_text}")
         os.makedirs(folder, exist_ok=True)
@@ -323,7 +374,7 @@ def run_ocr_task(image_crop):
             ocr_conf = line[2]
             bx1, by1 = map(lambda x: int(x/OCR_UPSCALE), line[0][0])
             bx2, by2 = map(lambda x: int(x/OCR_UPSCALE), line[0][2])
-            
+
             # Try province match FIRST on raw text (with vowels intact!)
             province = match_province(raw_text)
             if province:
@@ -404,15 +455,40 @@ class PlateVoteBuffer:
 
 
 # ============================================================
+# Camera helper: open with retry
+# ============================================================
+
+def open_camera(source, max_attempts=5):
+    """
+    FIX: Try to open camera source with retries.
+    Returns VideoCapture or raises RuntimeError.
+    """
+    for attempt in range(1, max_attempts + 1):
+        cap = cv2.VideoCapture(source)
+        if cap.isOpened():
+            log.info(f"Camera opened: {source} (attempt {attempt})")
+            return cap
+        log.warning(f"Camera open attempt {attempt}/{max_attempts} failed for source: {source}")
+        time.sleep(CAM_RECONNECT_DELAY)
+    raise RuntimeError(f"Could not open video source after {max_attempts} attempts: {source}")
+
+
+# ============================================================
 # Main Loop
 # ============================================================
 
 def main():
     log.info(f"Starting AI Service for Camera {CAMERA_ID}...")
-    cap = cv2.VideoCapture(CAMERA_SOURCE)
+    log.info(f"Mode: {'TEST (paper plate)' if TEST_MODE else 'PRODUCTION (real vehicles)'}")
+    log.info(f"Plate threshold: {PLATE_CONF_THRESHOLD}, Province threshold: {PROVINCE_CONF_THRESHOLD}")
+    log.info(f"Multi-frame votes needed: {MULTI_FRAME_VOTES_NEEDED}, Window: {DEBOUNCE_WINDOW}s")
+    log.info(f"Debug images: {'ENABLED (max ' + str(MAX_DEBUG_FOLDERS) + ' folders)' if SAVE_DEBUG_IMAGES else 'DISABLED'} -> {DEBUG_DIR}")
 
-    if not cap.isOpened():
-        log.error(f"Could not open video source {CAMERA_SOURCE}")
+    # FIX: Open camera with retry helper
+    try:
+        cap = open_camera(CAMERA_SOURCE)
+    except RuntimeError as e:
+        log.error(str(e))
         return
 
     # Anti-spam cache
@@ -437,6 +513,9 @@ def main():
     last_crop_offset_y = 0
     last_vehicle_detected = False
 
+    # FIX: Camera reconnect state
+    cam_fail_count = 0
+
     # Multi-frame vote buffer
     vote_buffer = PlateVoteBuffer(
         votes_needed=MULTI_FRAME_VOTES_NEEDED,
@@ -446,269 +525,289 @@ def main():
     # Keep a reference to the original frame for debug saving
     last_original_frame = None
 
-    log.info(f"Mode: {'TEST (paper plate)' if TEST_MODE else 'PRODUCTION (real vehicles)'}")
-    log.info(f"Plate threshold: {PLATE_CONF_THRESHOLD}, Province threshold: {PROVINCE_CONF_THRESHOLD}")
-    log.info(f"Multi-frame votes needed: {MULTI_FRAME_VOTES_NEEDED}, Window: {DEBOUNCE_WINDOW}s")
-    log.info(f"Debug images saved to: {DEBUG_DIR}")
+    try:
+        while True:
+            ret, frame = cap.read()
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            time.sleep(1)
-            continue
+            # FIX: Camera reconnect on sustained failure
+            if not ret:
+                cam_fail_count += 1
+                log.warning(f"Frame read failed ({cam_fail_count}/{CAM_MAX_RETRY})")
+                time.sleep(1)
+                if cam_fail_count >= CAM_MAX_RETRY:
+                    log.warning("Too many read failures — attempting camera reconnect...")
+                    cap.release()
+                    try:
+                        cap = open_camera(CAMERA_SOURCE)
+                        cam_fail_count = 0
+                        log.info("Camera reconnected successfully.")
+                    except RuntimeError as e:
+                        log.error(f"Reconnect failed: {e}. Retrying in 10s...")
+                        time.sleep(10)
+                continue
 
-        frame_count += 1
-        last_original_frame = frame.copy()
+            cam_fail_count = 0  # Reset on successful read
+            frame_count += 1
+            last_original_frame = frame.copy()
 
-        # ==============================================
-        # 1. Vehicle Detection / Test Mode
-        # ==============================================
-        if TEST_MODE:
-            # TEST MODE: Skip YOLO entirely, scan center 60% of frame
-            fh, fw = frame.shape[:2]
-            margin_x, margin_y = int(fw * 0.2), int(fh * 0.2)
-            cx1, cy1 = margin_x, margin_y
-            cx2, cy2 = fw - margin_x, fh - margin_y
+            # ==============================================
+            # 1. Vehicle Detection / Test Mode
+            # ==============================================
+            if TEST_MODE:
+                # TEST MODE: Skip YOLO entirely, scan center 60% of frame
+                fh, fw = frame.shape[:2]
+                margin_x, margin_y = int(fw * 0.2), int(fh * 0.2)
+                cx1, cy1 = margin_x, margin_y
+                cx2, cy2 = fw - margin_x, fh - margin_y
 
-            last_vehicle_detected = True
-            last_vehicle_boxes = [(cx1, cy1, cx2, cy2)]
-            last_best_crop = frame[cy1:cy2, cx1:cx2]
-            last_crop_offset_x = cx1
-            last_crop_offset_y = cy1
-        elif frame_count % PROCESS_EVERY_N_FRAMES == 0:
-            # PRODUCTION MODE: Use YOLO to find vehicles first
-            results = vehicle_model(frame, classes=[2, 3, 5, 7], imgsz=YOLO_IMG_SIZE, verbose=False)
-            last_vehicle_boxes = []
-            last_vehicle_detected = False
-            last_best_crop = None
-            last_crop_offset_x = 0
-            last_crop_offset_y = 0
+                last_vehicle_detected = True
+                last_vehicle_boxes = [(cx1, cy1, cx2, cy2)]
+                last_best_crop = frame[cy1:cy2, cx1:cx2]
+                last_crop_offset_x = cx1
+                last_crop_offset_y = cy1
+            elif frame_count % PROCESS_EVERY_N_FRAMES == 0:
+                # PRODUCTION MODE: Use YOLO to find vehicles first
+                results = vehicle_model(frame, classes=[2, 3, 5, 7], imgsz=YOLO_IMG_SIZE, verbose=False)
+                last_vehicle_boxes = []
+                last_vehicle_detected = False
+                last_best_crop = None
+                last_crop_offset_x = 0
+                last_crop_offset_y = 0
 
-            for r in results:
-                boxes = r.boxes
-                for box in boxes:
-                    last_vehicle_detected = True
-                    x1, y1, x2, y2 = map(int, box.xyxy[0])
-                    last_vehicle_boxes.append((x1, y1, x2, y2))
+                for r in results:
+                    boxes = r.boxes
+                    for box in boxes:
+                        last_vehicle_detected = True
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        last_vehicle_boxes.append((x1, y1, x2, y2))
 
-                    vehicle_crop = frame[y1:y2, x1:x2]
-                    if vehicle_crop.size > 0:
-                        h, w = vehicle_crop.shape[:2]
+                        vehicle_crop = frame[y1:y2, x1:x2]
+                        if vehicle_crop.size > 0:
+                            h, w = vehicle_crop.shape[:2]
 
-                        # --- 2-Stage: Try plate detection model first ---
-                        plate_found_by_model = False
-                        if plate_model is not None:
-                            plate_results = plate_model(vehicle_crop, imgsz=320, verbose=False)
-                            best_plate_conf = 0
-                            for pr in plate_results:
-                                for pbox in pr.boxes:
-                                    pconf = float(pbox.conf[0])
-                                    if pconf > best_plate_conf:
-                                        best_plate_conf = pconf
-                                        px1, py1, px2, py2 = map(int, pbox.xyxy[0])
-                                        # Add padding around detected plate (10%)
-                                        pad_x = int((px2 - px1) * 0.1)
-                                        pad_y = int((py2 - py1) * 0.1)
-                                        px1 = max(0, px1 - pad_x)
-                                        py1 = max(0, py1 - pad_y)
-                                        px2 = min(w, px2 + pad_x)
-                                        py2 = min(h, py2 + pad_y)
-                                        last_best_crop = vehicle_crop[py1:py2, px1:px2]
-                                        last_crop_offset_x = x1 + px1
-                                        last_crop_offset_y = y1 + py1
-                                        plate_found_by_model = True
+                            # --- 2-Stage: Try plate detection model first ---
+                            plate_found_by_model = False
+                            if plate_model is not None:
+                                plate_results = plate_model(vehicle_crop, imgsz=320, verbose=False)
+                                best_plate_conf = 0
+                                for pr in plate_results:
+                                    for pbox in pr.boxes:
+                                        pconf = float(pbox.conf[0])
+                                        if pconf > best_plate_conf:
+                                            best_plate_conf = pconf
+                                            px1, py1, px2, py2 = map(int, pbox.xyxy[0])
+                                            # Add padding around detected plate (10%)
+                                            pad_x = int((px2 - px1) * 0.1)
+                                            pad_y = int((py2 - py1) * 0.1)
+                                            px1 = max(0, px1 - pad_x)
+                                            py1 = max(0, py1 - pad_y)
+                                            px2 = min(w, px2 + pad_x)
+                                            py2 = min(h, py2 + pad_y)
+                                            last_best_crop = vehicle_crop[py1:py2, px1:px2]
+                                            last_crop_offset_x = x1 + px1
+                                            last_crop_offset_y = y1 + py1
+                                            plate_found_by_model = True
 
-                            if plate_found_by_model:
-                                log.debug(f"Detected plate region by model (conf: {best_plate_conf:.2f})")
+                                if plate_found_by_model:
+                                    log.debug(f"Detected plate region by model (conf: {best_plate_conf:.2f})")
 
-                        # --- Fallback: hardcoded crop if no plate model or no detection ---
-                        if not plate_found_by_model:
-                            last_best_crop = vehicle_crop[int(h*0.55):int(h*0.95), int(w*0.2):int(w*0.8)]
-                            last_crop_offset_x = x1 + int(w*0.2)
-                            last_crop_offset_y = y1 + int(h*0.55)
+                            # --- Fallback: hardcoded crop if no plate model or no detection ---
+                            if not plate_found_by_model:
+                                last_best_crop = vehicle_crop[int(h*0.55):int(h*0.95), int(w*0.2):int(w*0.8)]
+                                last_crop_offset_x = x1 + int(w*0.2)
+                                last_crop_offset_y = y1 + int(h*0.55)
 
-        # Draw cached vehicle/scan boxes
-        box_color = (0, 255, 255) if TEST_MODE else (0, 255, 0)  # Yellow in test, Green in prod
-        for (x1, y1, x2, y2) in last_vehicle_boxes:
-            cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
-        
-        # Show mode label on screen
-        if TEST_MODE:
-            cv2.putText(frame, 'TEST MODE', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+            # Draw cached vehicle/scan boxes
+            box_color = (0, 255, 255) if TEST_MODE else (0, 255, 0)  # Yellow in test, Green in prod
+            for (x1, y1, x2, y2) in last_vehicle_boxes:
+                cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
 
-        # ==============================================
-        # 2. Process completed OCR results
-        # ==============================================
-        if ocr_future is not None and ocr_future.done():
-            try:
-                found_texts = ocr_future.result()
-                if found_texts:
-                    plate_candidate = ""
-                    province_candidate = ""
-                    best_conf = 0
-                    consensus = None
+            # Show mode label on screen
+            if TEST_MODE:
+                cv2.putText(frame, 'TEST MODE', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
 
-                    min_x, min_y = 99999, 99999
-                    max_x, max_y = 0, 0
+            # ==============================================
+            # 2. Process completed OCR results
+            # ==============================================
+            if ocr_future is not None and ocr_future.done():
+                try:
+                    found_texts = ocr_future.result()
+                    if found_texts:
+                        plate_candidate = ""
+                        province_candidate = ""
+                        best_conf = 0
+                        consensus = None
 
-                    plate_parts = []
+                        min_x, min_y = 99999, 99999
+                        max_x, max_y = 0, 0
 
-                    for item in found_texts:
-                        text = item["text"]
-                        conf = item["conf"]
-                        bx1, by1, bx2, by2 = item["bbox"]
-                        abs_x1 = bx1 + ocr_x_offset
-                        abs_y1 = by1 + ocr_y_offset
-                        abs_x2 = bx2 + ocr_x_offset
-                        abs_y2 = by2 + ocr_y_offset
+                        plate_parts = []
 
-                        min_x = min(min_x, abs_x1)
-                        min_y = min(min_y, abs_y1)
-                        max_x = max(max_x, abs_x2)
-                        max_y = max(max_y, abs_y2)
+                        for item in found_texts:
+                            text = item["text"]
+                            conf = item["conf"]
+                            bx1, by1, bx2, by2 = item["bbox"]
+                            abs_x1 = bx1 + ocr_x_offset
+                            abs_y1 = by1 + ocr_y_offset
+                            abs_x2 = bx2 + ocr_x_offset
+                            abs_y2 = by2 + ocr_y_offset
 
-                        log.debug(f"OCR saw: '{text}' (Conf: {conf:.2f}){' [PROVINCE]' if item.get('is_province') else ''}")
+                            min_x = min(min_x, abs_x1)
+                            min_y = min(min_y, abs_y1)
+                            max_x = max(max_x, abs_x2)
+                            max_y = max(max_y, abs_y2)
 
-                        if item.get("is_province"):
-                            # Province already matched by NLP in run_ocr_task
-                            if conf >= PROVINCE_CONF_THRESHOLD:
-                                province_candidate = text
-                                log.debug(f"Province accepted: '{text}' (conf {conf:.2f})")
+                            log.debug(f"OCR saw: '{text}' (Conf: {conf:.2f}){' [PROVINCE]' if item.get('is_province') else ''}")
+
+                            if item.get("is_province"):
+                                # Province already matched by NLP in run_ocr_task
+                                if conf >= PROVINCE_CONF_THRESHOLD:
+                                    province_candidate = text
+                                    log.debug(f"Province accepted: '{text}' (conf {conf:.2f})")
+                                else:
+                                    log.debug(f"Province '{text}' rejected (conf {conf:.2f} < {PROVINCE_CONF_THRESHOLD})")
                             else:
-                                log.debug(f"Province '{text}' rejected (conf {conf:.2f} < {PROVINCE_CONF_THRESHOLD})")
-                        else:
-                            # Plate part: apply plate confidence threshold
-                            if conf >= PLATE_CONF_THRESHOLD:
-                                plate_parts.append({"text": text, "x": bx1, "conf": conf})
+                                # Plate part: apply plate confidence threshold
+                                if conf >= PLATE_CONF_THRESHOLD:
+                                    plate_parts.append({"text": text, "x": bx1, "conf": conf})
+                                else:
+                                    log.debug(f"Plate part '{text}' rejected (conf {conf:.2f} < {PLATE_CONF_THRESHOLD})")
+
+                        # Sort plate parts left-to-right and join
+                        plate_parts = sorted(plate_parts, key=lambda p: p["x"])
+                        combined_plate = "".join([p["text"] for p in plate_parts])
+
+                        # Normalize the plate
+                        combined_plate = normalize_plate(combined_plate)
+
+                        if plate_parts:
+                            best_conf = max([p["conf"] for p in plate_parts])
+
+                        has_consonant = bool(re.search(r'[ก-ฮ]', combined_plate))
+                        has_number = bool(re.search(r'[0-9]', combined_plate))
+
+                        is_standard_plate = (has_consonant and has_number and len(combined_plate) >= 3)
+                        is_truck_plate = (combined_plate.isdigit() and len(combined_plate) >= 5)
+
+                        if is_standard_plate or is_truck_plate:
+                            plate_candidate = combined_plate
+
+                        # ==============================================
+                        # 3. Multi-Frame Voting (Debounce) or Instant Send
+                        # ==============================================
+                        if plate_candidate:
+                            # Update display immediately (red box appears fast!)
+                            combined_display = plate_candidate
+                            if province_candidate:
+                                combined_display += f" {province_candidate}"
+
+                            pad_x, pad_y = 15, 10
+                            final_box = (
+                                max(0, min_x - pad_x),
+                                max(0, min_y - pad_y),
+                                max_x + pad_x,
+                                max_y + pad_y
+                            )
+                            last_ocr_display = [{"text": combined_display, "bbox": final_box}]
+                            last_ocr_timestamp = time.time()
+
+                            # HIGH CONFIDENCE? -> Send immediately, no waiting!
+                            if best_conf >= INSTANT_SEND_THRESHOLD:
+                                log.info(f"[FAST] High confidence ({best_conf:.2f}) -> instant send!")
+                                consensus = (plate_candidate, province_candidate, best_conf)
                             else:
-                                log.debug(f"Plate part '{text}' rejected (conf {conf:.2f} < {PLATE_CONF_THRESHOLD})")
+                                # Normal path: add to vote buffer and wait for agreement
+                                vote_buffer.add_reading(plate_candidate, province_candidate, best_conf)
+                                consensus = vote_buffer.get_consensus()
 
-                    # Sort plate parts left-to-right and join
-                    plate_parts = sorted(plate_parts, key=lambda p: p["x"])
-                    combined_plate = "".join([p["text"] for p in plate_parts])
+                        # Process consensus (from either instant or multi-frame)
+                        if plate_candidate and consensus:
+                            final_plate, final_province, avg_conf = consensus
+                            current_time = time.time()
 
-                    # Normalize the plate
-                    combined_plate = normalize_plate(combined_plate)
+                            # FIX: Purge expired entries from cache before checking (prevent memory leak)
+                            sent_plates_cache = {
+                                k: v for k, v in sent_plates_cache.items()
+                                if (current_time - v) <= DUPLICATE_COOLDOWN
+                            }
 
-                    if plate_parts:
-                        best_conf = max([p["conf"] for p in plate_parts])
-
-                    has_consonant = bool(re.search(r'[ก-ฮ]', combined_plate))
-                    has_number = bool(re.search(r'[0-9]', combined_plate))
-
-                    is_standard_plate = (has_consonant and has_number and len(combined_plate) >= 3)
-                    is_truck_plate = (combined_plate.isdigit() and len(combined_plate) >= 5)
-
-                    if is_standard_plate or is_truck_plate:
-                        plate_candidate = combined_plate
-
-                    # ==============================================
-                    # 3. Multi-Frame Voting (Debounce) or Instant Send
-                    # ==============================================
-                    if plate_candidate:
-                        # Update display immediately (red box appears fast!)
-                        combined_display = plate_candidate
-                        if province_candidate:
-                            combined_display += f" {province_candidate}"
-
-                        pad_x, pad_y = 15, 10
-                        final_box = (
-                            max(0, min_x - pad_x),
-                            max(0, min_y - pad_y),
-                            max_x + pad_x,
-                            max_y + pad_y
-                        )
-                        last_ocr_display = [{"text": combined_display, "bbox": final_box}]
-                        last_ocr_timestamp = time.time()
-
-                        # HIGH CONFIDENCE? -> Send immediately, no waiting!
-                        if best_conf >= INSTANT_SEND_THRESHOLD:
-                            log.info(f"[FAST] High confidence ({best_conf:.2f}) -> instant send!")
-                            consensus = (plate_candidate, province_candidate, best_conf)
-                        else:
-                            # Normal path: add to vote buffer and wait for agreement
-                            vote_buffer.add_reading(plate_candidate, province_candidate, best_conf)
-                            consensus = vote_buffer.get_consensus()
-
-                    # Process consensus (from either instant or multi-frame)
-                    if plate_candidate and consensus:
-                        final_plate, final_province, avg_conf = consensus
-                        combined_text = final_plate
-                        if final_province:
-                            combined_text += f" {final_province}"
-
-                        current_time = time.time()
-
-                        # Global cooldown
-                        if (current_time - global_last_sent_time) >= GLOBAL_COOLDOWN:
-                            # Duplicate check
-                            is_duplicate = False
-                            for cached_plate, last_time in sent_plates_cache.items():
-                                if (current_time - last_time) <= DUPLICATE_COOLDOWN:
+                            # Global cooldown
+                            if (current_time - global_last_sent_time) >= GLOBAL_COOLDOWN:
+                                # Duplicate check
+                                is_duplicate = False
+                                norm_candidate = normalize_plate(final_plate)
+                                for cached_plate, last_time in sent_plates_cache.items():
                                     similarity = difflib.SequenceMatcher(
-                                        None, normalize_plate(combined_text), normalize_plate(cached_plate)
+                                        None, norm_candidate, normalize_plate(cached_plate)
                                     ).ratio()
                                     if similarity > 0.8:
                                         is_duplicate = True
                                         sent_plates_cache[cached_plate] = current_time
                                         break
 
-                            if not is_duplicate:
-                                log.info(f"*** CONFIRMED PLATE (multi-frame): {combined_text} (avg conf: {avg_conf:.2f}) ***")
+                                if not is_duplicate:
+                                    log.info(f"*** CONFIRMED PLATE: {final_plate} | Province: {final_province} (avg conf: {avg_conf:.2f}) ***")
 
-                                # Save debug images
-                                save_debug_images(
-                                    last_original_frame,
-                                    last_best_crop,
-                                    final_plate,
-                                    final_province,
-                                    avg_conf
-                                )
+                                    # Save debug images
+                                    save_debug_images(
+                                        last_original_frame,
+                                        last_best_crop,
+                                        final_plate,
+                                        final_province,
+                                        avg_conf
+                                    )
 
-                                # Send to backend
-                                payload = {
-                                    "plate_number": combined_text,
-                                    "confidence_score": avg_conf,
-                                    "camera_id": CAMERA_ID
-                                }
-                                send_with_retry(payload)
+                                    # FIX: Send plate_number and province as separate fields
+                                    payload = {
+                                        "plate_number": final_plate,
+                                        "province": final_province,
+                                        "confidence_score": round(avg_conf, 4),
+                                        "camera_id": CAMERA_ID,
+                                        "timestamp": datetime.now().isoformat()
+                                    }
+                                    send_with_retry(payload)
 
-                                sent_plates_cache[combined_text] = current_time
-                                global_last_sent_time = current_time
+                                    sent_plates_cache[final_plate] = current_time
+                                    global_last_sent_time = current_time
 
-            except Exception as e:
-                log.error(f"OCR Error: {e}", exc_info=True)
-            ocr_future = None
+                except Exception as e:
+                    log.error(f"OCR Error: {e}", exc_info=True)
+                ocr_future = None
 
-        # ==============================================
-        # 4. Dispatch new OCR task (if idle)
-        # ==============================================
-        if ocr_future is None:
-            if last_vehicle_detected and last_best_crop is not None:
-                ocr_x_offset = last_crop_offset_x
-                ocr_y_offset = last_crop_offset_y
-                ocr_future = executor.submit(run_ocr_task, last_best_crop)
-            # else: Don't scan empty frames -> save CPU for when a car actually appears
+            # ==============================================
+            # 4. Dispatch new OCR task (if idle)
+            # ==============================================
+            if ocr_future is None:
+                if last_vehicle_detected and last_best_crop is not None:
+                    ocr_x_offset = last_crop_offset_x
+                    ocr_y_offset = last_crop_offset_y
+                    ocr_future = executor.submit(run_ocr_task, last_best_crop)
+                # else: Don't scan empty frames -> save CPU for when a car actually appears
 
-        # ==============================================
-        # 5. Draw persistent red text
-        # ==============================================
-        if time.time() - last_ocr_timestamp < DISPLAY_DURATION:
-            for item in last_ocr_display:
-                bx1, by1, bx2, by2 = item["bbox"]
-                text = item["text"]
-                cv2.rectangle(frame, (bx1, by1), (bx2, by2), (0, 0, 255), 2)
-                frame = put_thai_text(frame, text, (bx1, max(0, by1 - 30)), font_size=24, color=(0, 0, 255))
+            # ==============================================
+            # 5. Draw persistent red text
+            # ==============================================
+            if time.time() - last_ocr_timestamp < DISPLAY_DURATION:
+                for item in last_ocr_display:
+                    bx1, by1, bx2, by2 = item["bbox"]
+                    text = item["text"]
+                    cv2.rectangle(frame, (bx1, by1), (bx2, by2), (0, 0, 255), 2)
+                    frame = put_thai_text(frame, text, (bx1, max(0, by1 - 30)), font_size=24, color=(0, 0, 255))
 
-        # ==============================================
-        # 6. Display frame
-        # ==============================================
-        cv2.imshow(f"LPR Camera {CAMERA_ID}", frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+            # ==============================================
+            # 6. Display frame
+            # ==============================================
+            cv2.imshow(f"LPR Camera {CAMERA_ID}", frame)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
 
-    cap.release()
-    cv2.destroyAllWindows()
+    finally:
+        # FIX: Proper cleanup — shutdown executor and release camera
+        log.info("Shutting down AI service...")
+        executor.shutdown(wait=False)
+        cap.release()
+        cv2.destroyAllWindows()
+        log.info("Shutdown complete.")
 
 if __name__ == "__main__":
     main()

@@ -5,6 +5,7 @@ export default defineNuxtConfig({
   modules: ['@nuxtjs/tailwindcss'],
   ssr: false, // For Nginx Static Hosting
   app: {
+    baseURL: '/plate/',
     head: {
       title: 'LPR & Access Analytics',
       meta: [
