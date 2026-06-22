@@ -79,6 +79,7 @@
             :key="log.id"
             :class="[
               'p-3 rounded-xl border transition-all flex items-center justify-between group',
+              log.isNew ? 'animate-slide-in' : '',
               log.type === 'BLACKLIST' 
                 ? 'bg-rose-500/10 border-rose-500/30 hover:bg-rose-500/20' 
                 : 'bg-slate-100/50 dark:bg-white/[0.03] border-slate-200 dark:border-white/[0.05] hover:bg-slate-200/50 dark:hover:bg-white/[0.06] hover:border-slate-300 dark:hover:border-white/[0.1]'
@@ -134,7 +135,7 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted, computed } from 'vue'
-import { io } from 'socket.io-client'
+import { useSocket } from '~/composables/useSocket'
 import { useTheme } from '~/composables/useTheme'
 
 definePageMeta({
@@ -142,6 +143,7 @@ definePageMeta({
 })
 
 const { isDark } = useTheme()
+const { socket } = useSocket()
 
 const blacklistAlert = ref({ show: false, plate: '', dir: '' })
 const playAlertSound = () => {
@@ -247,11 +249,17 @@ const typeColor = (type) => {
   return 'bg-accent-amber/15 text-amber-500 dark:text-amber-400'
 }
 
-let socket = null
+// ─── Initial Data Fetch ───────────────────────────────────────────────────────
+const apiBase = useRuntimeConfig().public.apiBase || 'http://localhost:3001'
 
 const fetchDashboardData = async () => {
   try {
-    const statsRes = await fetch('http://localhost:3001/api/detect/stats')
+    const [statsRes, logsRes, chartRes] = await Promise.all([
+      fetch(`${apiBase}/api/detect/stats`),
+      fetch(`${apiBase}/api/detect/logs`),
+      fetch(`${apiBase}/api/detect/chart`),
+    ])
+
     const statsData = await statsRes.json()
     if (statsData.success) {
       stats.value[0].value = statsData.data.total
@@ -260,64 +268,86 @@ const fetchDashboardData = async () => {
       stats.value[3].value = statsData.data.active
     }
 
-    const logsRes = await fetch('http://localhost:3001/api/detect/logs')
     const logsData = await logsRes.json()
     if (logsData.success) {
       recentLogs.value = logsData.data
     }
 
-    const chartRes = await fetch('http://localhost:3001/api/detect/chart')
     const chartResData = await chartRes.json()
     if (chartResData.success) {
-      const newCounts = Array(12).fill(0);
+      const newCounts = Array(12).fill(0)
       chartResData.data.forEach(d => {
-        const hour = parseInt(d.hour);
-        const slot = Math.floor(hour / 2);
-        if (slot >= 0 && slot < 12) {
-          newCounts[slot] += d.count;
-        }
-      });
-      chartSeries.value = [{
-        name: 'Vehicles',
-        data: newCounts
-      }];
+        const hour = parseInt(d.hour)
+        const slot = Math.floor(hour / 2)
+        if (slot >= 0 && slot < 12) newCounts[slot] += d.count
+      })
+      chartSeries.value = [{ name: 'Vehicles', data: newCounts }]
     }
   } catch (error) {
     console.error('Error fetching dashboard data:', error)
   }
 }
 
-onMounted(() => {
-  fetchDashboardData()
+// ─── Realtime: Handle new detection without full re-fetch ─────────────────────
+const handleNewDetection = (data) => {
+  // 1. Prepend new log with "isNew" flag for slide-in animation
+  const entry = { ...data, isNew: true }
+  recentLogs.value.unshift(entry)
+  if (recentLogs.value.length > 20) recentLogs.value.pop()
 
-  socket = io('http://localhost:3001')
+  // Remove animation flag after it plays (so it doesn't replay on re-render)
+  setTimeout(() => { entry.isNew = false }, 600)
 
-  socket.on('connect', () => {
-    console.log('Connected to LPR Real-time Server')
-  })
+  // 2. Blacklist Alert
+  if (data.isBlacklist || data.type === 'BLACKLIST') {
+    blacklistAlert.value = { show: true, plate: data.plate, dir: data.dir }
+    playAlertSound()
+    setTimeout(() => { blacklistAlert.value.show = false }, 5000)
+  }
+}
 
-  socket.on('new_detection', (data) => {
-    console.log('New detection received:', data)
-    recentLogs.value.unshift(data)
-    if (recentLogs.value.length > 20) {
-      recentLogs.value.pop()
-    }
-    
-    if (data.isBlacklist || data.type === 'BLACKLIST') {
-      blacklistAlert.value = { show: true, plate: data.plate, dir: data.dir }
-      playAlertSound()
-      setTimeout(() => {
-        blacklistAlert.value.show = false
-      }, 5000)
-    }
-    
-    fetchDashboardData()
-  })
+// ─── Realtime: Stats pushed from server (no need to re-fetch DB)
+const handleStatsUpdate = (data) => {
+  if (!data) return
+  stats.value[0].value = data.total
+  stats.value[1].value = data.staff
+  stats.value[2].value = data.visitor
+  stats.value[3].value = data.active
+
+  // Update chart — bump the current 2-hour slot by 1
+  const slot = Math.floor(new Date().getHours() / 2)
+  const newData = [...chartSeries.value[0].data]
+  newData[slot] = (newData[slot] || 0) + 1
+  chartSeries.value = [{ name: 'Vehicles', data: newData }]
+}
+
+onMounted(async () => {
+  await fetchDashboardData()
+
+  // Register socket events once socket is ready
+  const registerEvents = () => {
+    if (!socket.value) return
+    socket.value.on('new_detection', handleNewDetection)
+    socket.value.on('stats_update', handleStatsUpdate)
+  }
+
+  // Socket might not be ready instantly on first render
+  if (socket.value) {
+    registerEvents()
+  } else {
+    const interval = setInterval(() => {
+      if (socket.value) {
+        registerEvents()
+        clearInterval(interval)
+      }
+    }, 100)
+  }
 })
 
 onUnmounted(() => {
-  if (socket) {
-    socket.disconnect()
+  if (socket.value) {
+    socket.value.off('new_detection', handleNewDetection)
+    socket.value.off('stats_update', handleStatsUpdate)
   }
 })
 </script>

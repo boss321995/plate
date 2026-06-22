@@ -74,11 +74,41 @@ export const handleDetection = async (req: Request, res: Response) => {
         plate: plate_number,
         type: vehicleTypeLabel,
         dir: direction,
-        time: 'Just now', // Could be formatted actual time
+        time: new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
         confidence: confidence_score,
         isBlacklist: isBlacklist
       };
       io.emit('new_detection', payload);
+
+      // Also emit updated stats so dashboard cards update without re-fetching DB
+      try {
+        const today = new Date().toISOString().split('T')[0] + '%';
+        const [totalRows]: any = await pool.query('SELECT COUNT(*) as cnt FROM vehicle_logs WHERE created_at LIKE ?', [today]);
+        const [typeRows]: any = await pool.query(`
+          SELECT v.is_staff, v.is_internal, COUNT(*) as cnt
+          FROM vehicle_logs vl
+          LEFT JOIN vehicles v ON vl.vehicle_id = v.id
+          WHERE vl.created_at LIKE ?
+          GROUP BY v.is_staff, v.is_internal
+        `, [today]);
+        const [inRows]: any = await pool.query("SELECT COUNT(*) as cnt FROM vehicle_logs WHERE direction = 'IN' AND created_at LIKE ?", [today]);
+        const [outRows]: any = await pool.query("SELECT COUNT(*) as cnt FROM vehicle_logs WHERE direction = 'OUT' AND created_at LIKE ?", [today]);
+
+        let staffCnt = 0, visitorCnt = 0;
+        for (const row of typeRows) {
+          if (row.is_staff || row.is_internal) staffCnt += row.cnt;
+          else visitorCnt += row.cnt;
+        }
+
+        io.emit('stats_update', {
+          total: totalRows[0].cnt.toLocaleString(),
+          staff: staffCnt.toLocaleString(),
+          visitor: visitorCnt.toLocaleString(),
+          active: Math.max(0, inRows[0].cnt - outRows[0].cnt).toLocaleString()
+        });
+      } catch (statsErr) {
+        console.warn('[Socket] Could not emit stats_update:', statsErr);
+      }
     }
 
     res.status(200).json({

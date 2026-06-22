@@ -39,7 +39,15 @@
             <tr v-else-if="logs.length === 0" class="text-center">
               <td colspan="5" class="px-6 py-12 text-slate-500">No logs found.</td>
             </tr>
-            <tr v-else v-for="log in logs" :key="log.id" class="hover:bg-slate-100/50 dark:hover:bg-white/[0.03] transition-colors">
+            <tr
+              v-else
+              v-for="log in logs"
+              :key="log.id"
+              :class="[
+                'hover:bg-slate-100/50 dark:hover:bg-white/[0.03] transition-colors',
+                log.isNew ? 'animate-slide-in' : ''
+              ]"
+            >
               <td class="px-6 py-3.5 font-mono font-bold text-slate-800 dark:text-white text-sm">
                 {{ log.plate_number }}
               </td>
@@ -89,22 +97,28 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
+import { useSocket } from '~/composables/useSocket'
 
 definePageMeta({
   middleware: 'auth'
 })
+
+const { socket } = useSocket()
+const apiBase = useRuntimeConfig().public.apiBase || 'http://localhost:3001'
 
 const logs = ref([])
 const page = ref(1)
 const totalPages = ref(1)
 const loading = ref(true)
 const isExporting = ref(false)
+// Live dot: blinks when new data arrives
+const hasNewData = ref(false)
 
 const fetchLogs = async () => {
   loading.value = true
   try {
-    const res = await fetch(`http://localhost:3001/api/logs?page=${page.value}&limit=15`)
+    const res = await fetch(`${apiBase}/api/logs?page=${page.value}&limit=15`)
     const data = await res.json()
     if (data.success) {
       logs.value = data.data
@@ -127,7 +141,7 @@ const changePage = (newPage) => {
 const exportExcel = async () => {
   isExporting.value = true
   try {
-    window.location.href = 'http://localhost:3001/api/logs/export/excel'
+    window.location.href = `${apiBase}/api/logs/export/excel`
   } catch (error) {
     console.error('Export failed', error)
   }
@@ -147,7 +161,52 @@ const formatTime = (isoString) => {
   return date.toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'medium' })
 }
 
-onMounted(() => {
-  fetchLogs()
+// ─── Realtime: New detection - prepend row on page 1 only ──────────────────
+const handleNewDetection = (data) => {
+  if (page.value !== 1) {
+    // User is on page 2+ — just flash a "new data" indicator, don't disrupt pagination
+    hasNewData.value = true
+    return
+  }
+
+  // Map socket payload to the same shape as the logs table expects
+  const newRow = {
+    id: data.id || Date.now(),
+    plate_number: data.plate,
+    vehicle_type: data.type,
+    direction: data.dir,
+    confidence_score: data.confidence || 0,
+    timestamp: new Date().toISOString(),
+    isNew: true,  // triggers slide-in animation
+  }
+
+  logs.value.unshift(newRow)
+  if (logs.value.length > 15) logs.value.pop()
+
+  // Remove animation flag after animation completes
+  setTimeout(() => { newRow.isNew = false }, 700)
+
+  // Flash indicator
+  hasNewData.value = true
+  setTimeout(() => { hasNewData.value = false }, 2000)
+}
+
+onMounted(async () => {
+  await fetchLogs()
+
+  const register = () => {
+    if (!socket.value) return
+    socket.value.on('new_detection', handleNewDetection)
+  }
+
+  if (socket.value) {
+    register()
+  } else {
+    const iv = setInterval(() => { if (socket.value) { register(); clearInterval(iv) } }, 100)
+  }
+})
+
+onUnmounted(() => {
+  if (socket.value) socket.value.off('new_detection', handleNewDetection)
 })
 </script>

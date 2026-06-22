@@ -51,6 +51,7 @@ module.exports = {
         'border-glow': 'border-glow 3s ease infinite',
         'fade-in-up': 'fade-in-up 0.5s ease-out forwards',
         'slide-in-right': 'slide-in-right 0.3s ease-out forwards',
+        'slide-in': 'slide-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards',
       },
       keyframes: {
         shimmer: {
@@ -80,6 +81,12 @@ module.exports = {
         'slide-in-right': {
           '0%': { opacity: '0', transform: 'translateX(20px)' },
           '100%': { opacity: '1', transform: 'translateX(0)' },
+        },
+        // New row drops in smoothly from top
+        'slide-in': {
+          '0%': { opacity: '0', transform: 'translateY(-12px) scale(0.98)' },
+          '60%': { opacity: '1', transform: 'translateY(2px) scale(1.005)' },
+          '100%': { opacity: '1', transform: 'translateY(0) scale(1)' },
         },
       },
       boxShadow: {
