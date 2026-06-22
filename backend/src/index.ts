@@ -13,7 +13,7 @@ import { initSocket } from './socket';
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3003;
 
 // Create HTTP server
 const server = http.createServer(app);
