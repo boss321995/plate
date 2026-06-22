@@ -53,3 +53,39 @@ export const getActiveVehicles = async (req: Request, res: Response) => {
     res.status(500).json({ success: false, message: 'Server Error' });
   }
 };
+
+export const getParkingStats = async (req: Request, res: Response) => {
+  try {
+    const query = `
+      SELECT v.is_staff, v.is_internal, v.is_blacklist
+      FROM vehicle_logs t1
+      INNER JOIN (
+          SELECT plate_number, MAX(id) as max_id
+          FROM vehicle_logs
+          GROUP BY plate_number
+      ) t2 ON t1.id = t2.max_id
+      LEFT JOIN vehicles v ON t1.vehicle_id = v.id
+      WHERE t1.direction = 'IN'
+    `;
+    
+    const [rows]: any = await pool.query(query);
+    
+    let total = 0;
+    let staff = 0;
+    let visitor = 0;
+    
+    for (const row of rows) {
+      total++;
+      if (row.is_staff || row.is_internal) {
+        staff++;
+      } else if (!row.is_blacklist) {
+        visitor++;
+      }
+    }
+    
+    res.json({ success: true, data: { total, staff, visitor } });
+  } catch (error) {
+    console.error('Error fetching parking stats:', error);
+    res.status(500).json({ success: false, message: 'Server Error' });
+  }
+};
