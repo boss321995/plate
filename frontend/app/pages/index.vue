@@ -117,27 +117,30 @@
   </div>
 
   <!-- Blacklist Alert Overlay -->
-  <Teleport to="body">
-    <div v-if="blacklistAlert.show" class="fixed inset-0 z-[100] flex items-center justify-center pointer-events-none">
-      <div class="absolute inset-0 bg-rose-600/20 animate-pulse"></div>
-      <div class="glass-strong rounded-3xl p-8 border-2 border-rose-500 shadow-[0_0_100px_rgba(244,63,94,0.4)] animate-bounce text-center relative z-10 max-w-md w-full mx-4 bg-slate-900/90">
-        <div class="w-20 h-20 bg-rose-500/20 rounded-full flex items-center justify-center mx-auto mb-4 border border-rose-500/50">
-          <svg class="w-10 h-10 text-rose-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
-        </div>
-        <h2 class="text-3xl font-display font-bold text-rose-500 mb-2 uppercase tracking-wider text-glow-rose">Blacklist Alert</h2>
-        <p class="text-slate-300 text-lg mb-4">Unauthorized vehicle detected!</p>
-        <div class="bg-black/50 border border-rose-500/30 rounded-xl py-3 px-6 inline-block font-mono text-2xl text-white font-bold tracking-widest shadow-inner">
-          {{ blacklistAlert.plate }}
-        </div>
-        <div class="mt-4 text-rose-400 text-sm font-semibold">
-          Gate: {{ blacklistAlert.dir }} &bull; Just Now
+  <ClientOnly>
+    <Teleport to="body">
+      <div v-if="blacklistAlert.show" class="fixed inset-0 z-[100] flex items-center justify-center pointer-events-none">
+        <div class="absolute inset-0 bg-rose-600/20 animate-pulse"></div>
+        <div class="glass-strong rounded-3xl p-8 border-2 border-rose-500 shadow-[0_0_100px_rgba(244,63,94,0.4)] animate-bounce text-center relative z-10 max-w-md w-full mx-4 bg-slate-900/90">
+          <div class="w-20 h-20 bg-rose-500/20 rounded-full flex items-center justify-center mx-auto mb-4 border border-rose-500/50">
+            <svg class="w-10 h-10 text-rose-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+          </div>
+          <h2 class="text-3xl font-display font-bold text-rose-500 mb-2 uppercase tracking-wider text-glow-rose">Blacklist Alert</h2>
+          <p class="text-slate-300 text-lg mb-4">Unauthorized vehicle detected!</p>
+          <div class="bg-black/50 border border-rose-500/30 rounded-xl py-3 px-6 inline-block font-mono text-2xl text-white font-bold tracking-widest shadow-inner">
+            {{ blacklistAlert.plate }}
+          </div>
+          <div class="mt-4 text-rose-400 text-sm font-semibold">
+            Gate: {{ blacklistAlert.dir }} &bull; Just Now
+          </div>
         </div>
       </div>
-    </div>
-  </Teleport>
+    </Teleport>
+  </ClientOnly>
 
   <!-- Anomaly Alert Overlay (Orange - Vehicle looks different) -->
-  <Teleport to="body">
+  <ClientOnly>
+    <Teleport to="body">
     <div v-if="anomalyAlert.show" class="fixed inset-0 z-[100] flex items-center justify-center pointer-events-none">
       <div class="absolute inset-0 bg-amber-600/20 animate-pulse"></div>
       <div class="glass-strong rounded-3xl p-8 border-2 border-amber-500 shadow-[0_0_80px_rgba(245,158,11,0.4)] animate-fade-in-up text-center relative z-10 max-w-md w-full mx-4 bg-slate-900/90">
@@ -152,6 +155,7 @@
       </div>
     </div>
   </Teleport>
+  </ClientOnly>
 </template>
 
 <script setup>

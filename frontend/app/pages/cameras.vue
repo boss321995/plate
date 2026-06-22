@@ -79,61 +79,63 @@
     </div>
 
     <!-- Add Modal -->
-    <Teleport to="body">
-      <div v-if="showModal" class="fixed inset-0 z-50 flex items-center justify-center p-4" @click.self="closeModal">
-        <!-- Backdrop -->
-        <div class="absolute inset-0 bg-slate-900/50 dark:bg-dark-950/80 backdrop-blur-sm"></div>
-        
-        <!-- Modal Card -->
-        <div class="glass-strong rounded-2xl shadow-glass w-full max-w-lg overflow-hidden relative animate-fade-in-up border-gradient">
-          <!-- Header -->
-          <div class="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-white/[0.06]">
-            <h3 class="text-lg font-display font-bold text-slate-900 dark:text-white">Add New Camera</h3>
-            <button @click="closeModal" class="text-slate-500 hover:text-slate-900 dark:hover:text-white transition-colors w-8 h-8 rounded-lg hover:bg-slate-200 dark:hover:bg-white/5 flex items-center justify-center">
-              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-            </button>
-          </div>
+    <ClientOnly>
+      <Teleport to="body">
+        <div v-if="showModal" class="fixed inset-0 z-50 flex items-center justify-center p-4" @click.self="closeModal">
+          <!-- Backdrop -->
+          <div class="absolute inset-0 bg-slate-900/50 dark:bg-dark-950/80 backdrop-blur-sm"></div>
           
-          <form @submit.prevent="submitForm" class="p-6 space-y-5">
-            <div class="space-y-1.5">
-              <label class="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Camera Name *</label>
-              <input v-model="form.name" type="text" required placeholder="e.g. Main Entrance LPR" class="glass-input w-full rounded-xl px-4 py-2.5 text-sm" />
-            </div>
-            
-            <div class="grid grid-cols-2 gap-4">
-              <div class="space-y-1.5">
-                <label class="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Location</label>
-                <input v-model="form.location" type="text" placeholder="e.g. Gate A" class="glass-input w-full rounded-xl px-4 py-2.5 text-sm" />
-              </div>
-              <div class="space-y-1.5">
-                <label class="text-[11px] font-bold text-slate-500 uppercase tracking-wider">IP Address</label>
-                <input v-model="form.ip_address" type="text" placeholder="e.g. 192.168.1.50" class="glass-input w-full rounded-xl px-4 py-2.5 text-sm font-mono" />
-              </div>
-            </div>
-
-            <div class="space-y-1.5">
-              <label class="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Stream URL (MJPEG / Image Link)</label>
-              <input v-model="form.stream_url" type="text" placeholder="e.g. http://192.168.1.50:8080/stream/video.mjpeg" class="glass-input w-full rounded-xl px-4 py-2.5 text-sm font-mono" />
-            </div>
-            
-            <div class="space-y-1.5">
-              <label class="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Status</label>
-              <select v-model="form.status" class="glass-input w-full rounded-xl px-4 py-2.5 text-sm">
-                <option value="Online">Online</option>
-                <option value="Offline">Offline</option>
-              </select>
-            </div>
-
-            <div class="pt-3 flex justify-end space-x-3">
-              <button type="button" @click="closeModal" class="px-5 py-2.5 rounded-xl font-medium text-sm text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-white/5 transition-all">Cancel</button>
-              <button type="submit" :disabled="isSubmitting" class="btn-glow px-5 py-2.5 rounded-xl font-semibold text-sm text-white disabled:opacity-50 relative">
-                <span class="relative z-10">{{ isSubmitting ? 'Saving...' : 'Save Camera' }}</span>
+          <!-- Modal Card -->
+          <div class="glass-strong rounded-2xl shadow-glass w-full max-w-lg overflow-hidden relative animate-fade-in-up border-gradient">
+            <!-- Header -->
+            <div class="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-white/[0.06]">
+              <h3 class="text-lg font-display font-bold text-slate-900 dark:text-white">Add New Camera</h3>
+              <button @click="closeModal" class="text-slate-500 hover:text-slate-900 dark:hover:text-white transition-colors w-8 h-8 rounded-lg hover:bg-slate-200 dark:hover:bg-white/5 flex items-center justify-center">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
               </button>
             </div>
-          </form>
+            
+            <form @submit.prevent="submitForm" class="p-6 space-y-5">
+              <div class="space-y-1.5">
+                <label class="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Camera Name *</label>
+                <input v-model="form.name" type="text" required placeholder="e.g. Main Entrance LPR" class="glass-input w-full rounded-xl px-4 py-2.5 text-sm" />
+              </div>
+              
+              <div class="grid grid-cols-2 gap-4">
+                <div class="space-y-1.5">
+                  <label class="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Location</label>
+                  <input v-model="form.location" type="text" placeholder="e.g. Gate A" class="glass-input w-full rounded-xl px-4 py-2.5 text-sm" />
+                </div>
+                <div class="space-y-1.5">
+                  <label class="text-[11px] font-bold text-slate-500 uppercase tracking-wider">IP Address</label>
+                  <input v-model="form.ip_address" type="text" placeholder="e.g. 192.168.1.50" class="glass-input w-full rounded-xl px-4 py-2.5 text-sm font-mono" />
+                </div>
+              </div>
+
+              <div class="space-y-1.5">
+                <label class="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Stream URL (MJPEG / Image Link)</label>
+                <input v-model="form.stream_url" type="text" placeholder="e.g. http://192.168.1.50:8080/stream/video.mjpeg" class="glass-input w-full rounded-xl px-4 py-2.5 text-sm font-mono" />
+              </div>
+              
+              <div class="space-y-1.5">
+                <label class="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Status</label>
+                <select v-model="form.status" class="glass-input w-full rounded-xl px-4 py-2.5 text-sm">
+                  <option value="Online">Online</option>
+                  <option value="Offline">Offline</option>
+                </select>
+              </div>
+
+              <div class="pt-3 flex justify-end space-x-3">
+                <button type="button" @click="closeModal" class="px-5 py-2.5 rounded-xl font-medium text-sm text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-white/5 transition-all">Cancel</button>
+                <button type="submit" :disabled="isSubmitting" class="btn-glow px-5 py-2.5 rounded-xl font-semibold text-sm text-white disabled:opacity-50 relative">
+                  <span class="relative z-10">{{ isSubmitting ? 'Saving...' : 'Save Camera' }}</span>
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
-      </div>
-    </Teleport>
+      </Teleport>
+    </ClientOnly>
   </div>
 </template>
 
