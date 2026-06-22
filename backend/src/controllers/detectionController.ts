@@ -11,17 +11,18 @@ const COOLDOWN_TIME_MS = 3 * 60 * 1000; // 3 minutes
 // ============================================================
 function levenshteinDistance(a: string, b: string): number {
   const m = a.length, n = b.length;
-  const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
-  for (let i = 0; i <= m; i++) dp[i][0] = i;
-  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  const dp: number[][] = [];
+  for (let i = 0; i <= m; i++) dp.push(new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i]![0] = i;
+  for (let j = 0; j <= n; j++) dp[0]![j] = j;
   for (let i = 1; i <= m; i++) {
     for (let j = 1; j <= n; j++) {
-      dp[i][j] = a[i - 1] === b[j - 1]
-        ? dp[i - 1][j - 1]
-        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+      dp[i]![j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1]![j - 1]!
+        : 1 + Math.min(dp[i - 1]![j]!, dp[i]![j - 1]!, dp[i - 1]![j - 1]!);
     }
   }
-  return dp[m][n];
+  return dp[m]![n]!;
 }
 
 // Plate cache for fuzzy matching (refreshed every 60s)
@@ -71,9 +72,9 @@ function cosineSimilarity(a: number[], b: number[]): number {
   if (!a || !b || a.length !== b.length || a.length === 0) return 0;
   let dot = 0, magA = 0, magB = 0;
   for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    magA += a[i] * a[i];
-    magB += b[i] * b[i];
+    dot += a[i]! * b[i]!;
+    magA += a[i]! * a[i]!;
+    magB += b[i]! * b[i]!;
   }
   const denom = Math.sqrt(magA) * Math.sqrt(magB);
   return denom === 0 ? 0 : dot / denom;
@@ -182,8 +183,8 @@ export const handleDetection = async (req: Request, res: Response) => {
             .filter((f: any) => f !== null);
 
           if (prevFingerprints.length > 0) {
-            const avgFingerprint = prevFingerprints[0].map((_: number, i: number) =>
-              prevFingerprints.reduce((sum, fp) => sum + fp[i], 0) / prevFingerprints.length
+            const avgFingerprint = prevFingerprints[0]!.map((_: number, i: number) =>
+              prevFingerprints.reduce((sum, fp) => sum + fp[i]!, 0) / prevFingerprints.length
             );
 
             const similarity = cosineSimilarity(avgFingerprint, vehicle_fingerprint);
