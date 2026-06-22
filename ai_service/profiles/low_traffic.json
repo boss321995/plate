@@ -1,0 +1,9 @@
+{
+  "mode": "low_traffic",
+  "blur_threshold": 120.0,
+  "quality_threshold": 80.0,
+  "gamma": 1.0,
+  "window_size": 8,
+  "fps_limit": 3.0,
+  "description": "Low-traffic: strict thresholds, idle FPS, max window for best OCR"
+}

@@ -1,0 +1,9 @@
+{
+  "mode": "day",
+  "blur_threshold": 100.0,
+  "quality_threshold": 75.0,
+  "gamma": 1.0,
+  "window_size": 5,
+  "fps_limit": 9.0,
+  "description": "Normal daytime operation"
+}

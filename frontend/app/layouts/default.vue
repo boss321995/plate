@@ -21,7 +21,7 @@
       <!-- Navigation -->
       <nav class="flex-1 overflow-y-auto py-6 px-4 space-y-1.5">
         <p class="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-3 mb-3">Main Menu</p>
-        
+
         <NuxtLink
           v-for="item in navItems"
           :key="item.to"
@@ -31,10 +31,32 @@
         >
           <!-- Active indicator bar -->
           <div v-if="isActive(item.to)" class="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 rounded-full bg-gradient-to-b from-accent-cyan to-brand-500 shadow-glow-cyan"></div>
-          
+
           <div
             class="w-9 h-9 rounded-lg flex items-center justify-center mr-3 transition-all duration-300"
             :class="isActive(item.to) ? 'bg-accent-cyan/10 text-accent-cyan' : 'bg-slate-100 dark:bg-white/5 text-slate-500 group-hover:bg-slate-200 dark:group-hover:bg-white/10 group-hover:text-slate-700 dark:group-hover:text-slate-300'"
+            v-html="item.icon"
+          ></div>
+          <div>
+            <span class="text-sm">{{ item.label }}</span>
+            <p class="text-[10px] text-slate-500 dark:text-slate-600 group-hover:text-slate-600 dark:group-hover:text-slate-500 transition-colors">{{ item.desc }}</p>
+          </div>
+        </NuxtLink>
+
+        <!-- Operations section -->
+        <p class="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-3 pt-4 pb-2">Operations</p>
+
+        <NuxtLink
+          v-for="item in opsItems"
+          :key="item.to"
+          :to="item.to"
+          class="nav-item flex items-center px-3 py-2.5 rounded-xl font-medium transition-all duration-300 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white group relative"
+          :class="isActive(item.to) ? 'nav-item-active text-slate-900 dark:text-white' : ''"
+        >
+          <div v-if="isActive(item.to)" class="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 rounded-full bg-gradient-to-b from-accent-violet to-accent-fuchsia shadow-glow-cyan"></div>
+          <div
+            class="w-9 h-9 rounded-lg flex items-center justify-center mr-3 transition-all duration-300"
+            :class="isActive(item.to) ? 'bg-accent-violet/10 text-accent-violet' : 'bg-slate-100 dark:bg-white/5 text-slate-500 group-hover:bg-slate-200 dark:group-hover:bg-white/10 group-hover:text-slate-700 dark:group-hover:text-slate-300'"
             v-html="item.icon"
           ></div>
           <div>
@@ -118,16 +140,34 @@ const userInitial = computed(() => {
 })
 
 const routeName = computed(() => {
-  if (route.path === '/') return 'Dashboard'
-  if (route.path === '/logs') return 'Detection Logs'
-  if (route.path === '/vehicles') return 'Vehicle Management'
+  if (route.path === '/')            return 'Dashboard'
+  if (route.path === '/logs')        return 'Detection Logs'
+  if (route.path === '/vehicles')    return 'Vehicle Management'
+  if (route.path === '/debug')       return 'Pipeline Debug'
+  if (route.path === '/health_center') return 'System Health Center'
+  if (route.path === '/overview')    return 'System Overview'
+  if (route.path === '/fleet')       return 'Fleet Manager'
+  if (route.path === '/sites')       return 'Site Manager'
+  if (route.path === '/devices')     return 'Device Inventory'
+  if (route.path === '/alerts')      return 'Alert Center'
+  if (route.path === '/models')      return 'Model Registry'
+  if (route.path === '/backup')      return 'Backup Center'
   return 'System'
 })
 
 const routeDesc = computed(() => {
-  if (route.path === '/') return 'Real-time monitoring & analytics'
-  if (route.path === '/logs') return 'Historical access records'
-  if (route.path === '/vehicles') return 'Staff & whitelist management'
+  if (route.path === '/')            return 'Real-time monitoring & analytics'
+  if (route.path === '/logs')        return 'Historical access records'
+  if (route.path === '/vehicles')    return 'Staff & whitelist management'
+  if (route.path === '/debug')       return 'AI pipeline counters & diagnostics'
+  if (route.path === '/health_center') return 'Camera diagnostics, system resources & alerts'
+  if (route.path === '/overview')    return 'Aggregated KPIs across all sites & devices'
+  if (route.path === '/fleet')       return 'Live edge device registry & heartbeat status'
+  if (route.path === '/sites')       return 'Physical deployment site management'
+  if (route.path === '/devices')     return 'Edge device hardware inventory'
+  if (route.path === '/alerts')      return 'Enterprise alerts & audit log'
+  if (route.path === '/models')      return 'AI model versioning, activation & rollback'
+  if (route.path === '/backup')      return 'Automated backup archive & restore'
   return ''
 })
 
@@ -166,6 +206,63 @@ const navItems = [
     label: 'Active Parking',
     desc: 'Dwell time & overstay',
     icon: '<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path></svg>'
+  },
+  {
+    to: '/debug',
+    label: 'Pipeline Debug',
+    desc: 'AI metrics & diagnostics',
+    icon: '<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18"></path></svg>'
+  },
+  {
+    to: '/health_center',
+    label: 'Health Center',
+    desc: 'Camera & system health',
+    icon: '<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"></path></svg>'
+  },
+]
+
+const opsItems = [
+  {
+    to: '/overview',
+    label: 'System Overview',
+    desc: 'Cross-fleet KPIs',
+    icon: '<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>'
+  },
+  {
+    to: '/fleet',
+    label: 'Fleet Manager',
+    desc: 'Device heartbeats',
+    icon: '<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"></path></svg>'
+  },
+  {
+    to: '/sites',
+    label: 'Site Manager',
+    desc: 'Deployment sites',
+    icon: '<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>'
+  },
+  {
+    to: '/devices',
+    label: 'Device Inventory',
+    desc: 'Hardware registry',
+    icon: '<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z"></path></svg>'
+  },
+  {
+    to: '/alerts',
+    label: 'Alert Center',
+    desc: 'Enterprise alerts',
+    icon: '<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg>'
+  },
+  {
+    to: '/models',
+    label: 'Model Registry',
+    desc: 'Versioning & rollback',
+    icon: '<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"></path></svg>'
+  },
+  {
+    to: '/backup',
+    label: 'Backup Center',
+    desc: 'Archive & restore',
+    icon: '<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>'
   },
 ]
 </script>

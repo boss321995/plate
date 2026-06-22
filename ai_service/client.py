@@ -1,62 +1,87 @@
 """
-client.py — Production Thin Client LPR with ByteTrack
-======================================================
+client.py — Production ANPR Orchestrator v5
+============================================
 
-Pipeline:
-  RTSP/Camera
-  → Motion Gate (cheap pixel diff — skips dead frames fast)
-  → YOLOv8 Vehicle Detection with ByteTrack (ultralytics built-in)
-  → Per-track Best Frame Selection
-      ✓ Vehicle width ≥ 20% of frame
-      ✓ Laplacian variance ≥ BLUR_THRESHOLD (blur rejection)
-      ✓ Brightness 40–220
-  → Save ONE best frame per track_id to pending_frames/
+Orchestrates all Phase-4 + Phase-5 modules:
 
-Environment:
-  CAMERA_SOURCE     0 / RTSP URL           0
-  CAMERA_ID         Camera label           1
-  FPS_LIMIT         Max frames processed   5
-  BLUR_THRESHOLD    Min sharpness          100
-  MIN_VEHICLE_RATIO Min vehicle width %    0.20
-  PENDING_DIR       Output folder          pending_frames
-  MODEL_PATH        YOLOv8 model path      auto
+  Phase 4 (existing):
+    adaptive_fps       → Dynamic FPS (3/8/11) based on active track count
+    quality_engine     → 6-component quality score
+    direction_engine   → Virtual-line IN/OUT detection
+    window_manager     → Speed-based best frame window (3/5/8 frames)
+    track_manager      → TrackState / TrackManager registry
+    pipeline_metrics   → Stage counters: vehicle_seen → backend_saved
+    health_monitor     → /health HTTP endpoint (port 8880)
+    reflection_detector → Overexposure rejection
+    plate_validator    → Plate pixel size gate
+
+  Phase 5 (new):
+    auto_calibration   → Auto-adjusts thresholds every 5 min
+    camera_diagnostics → Detects lens dirt, rain, camera shift, vibration
+    alert_center       → Enterprise INFO/WARNING/CRITICAL alerts
+    self_healing       → Restarts processes, manages disk/memory
+
+Environment variables (all optional with defaults):
+  CAMERA_SOURCE        0 / RTSP URL              0
+  CAMERA_ID            Camera label integer       1
+  PENDING_DIR          Frame output folder        pending_frames
+  MODEL_PATH           YOLOv8 model path          auto-detect
+  WATCHDOG_TIMEOUT     No-frame reconnect (sec)   5.0
+  VIRTUAL_LINE_Y       Virtual line position      0.5
+  MIN_QUALITY_SCORE    Quality gate (0-100)       75  (overridden by auto-cal)
+  TRACK_FORGET_SEC     Stale track timeout        30.0
+  CAM_MAX_RETRY        Max consecutive frame fails 30
+  CAM_RECONNECT_DELAY  Seconds between retries    2.0
+  HEALTH_PORT          /health endpoint port      8880
+  DIAG_INTERVAL        Camera diagnostics check (sec) 10.0
 """
 
 import os
 import cv2
 import time
+import json
 import numpy as np
 from datetime import datetime
 from pathlib import Path
+
 from ultralytics import YOLO
 from logger_lpr import get_logger
+
+from adaptive_fps       import AdaptiveFPSEngine
+from quality_engine     import compute as compute_quality
+from direction_engine   import DirectionEngine
+from window_manager     import WindowManager
+from track_manager      import TrackManager
+from pipeline_metrics   import PipelineMetrics
+from health_monitor     import HealthMonitor
+from auto_calibration   import AutoCalibration
+from camera_diagnostics import CameraDiagnostics
+from alert_center       import AlertCenter
+from self_healing       import SelfHealing
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration
 # ─────────────────────────────────────────────────────────────────────────────
-_source = os.getenv("CAMERA_SOURCE", "0")
-CAMERA_SOURCE     = int(_source) if str(_source).isdigit() else _source
-CAMERA_ID         = int(os.getenv("CAMERA_ID", "1"))
-FPS_LIMIT         = float(os.getenv("FPS_LIMIT", "5"))          # max 5 FPS
-BLUR_THRESHOLD    = float(os.getenv("BLUR_THRESHOLD", "100"))   # Laplacian variance
-MIN_VEHICLE_RATIO = float(os.getenv("MIN_VEHICLE_RATIO", "0.20"))
-PENDING_DIR       = Path(os.getenv("PENDING_DIR", "pending_frames"))
-MODEL_PATH        = os.getenv("MODEL_PATH",
-                    "yolov8n.onnx" if os.path.exists("yolov8n.onnx") else "yolov8n.pt")
-
-# Camera reconnect
+_source             = os.getenv("CAMERA_SOURCE", "0")
+CAMERA_SOURCE       = int(_source) if str(_source).isdigit() else _source
+CAMERA_ID           = int(os.getenv("CAMERA_ID", "1"))
+PENDING_DIR         = Path(os.getenv("PENDING_DIR", "pending_frames"))
+MODEL_PATH          = os.getenv("MODEL_PATH",
+                      "yolov8n.onnx" if os.path.exists("yolov8n.onnx") else "yolov8n.pt")
+WATCHDOG_TIMEOUT    = float(os.getenv("WATCHDOG_TIMEOUT", "5.0"))
+VIRTUAL_LINE_Y      = float(os.getenv("VIRTUAL_LINE_Y", "0.5"))
+MIN_QUALITY_SCORE   = float(os.getenv("MIN_QUALITY_SCORE", "75"))
+TRACK_FORGET_SEC    = float(os.getenv("TRACK_FORGET_SEC", "30.0"))
 CAM_MAX_RETRY       = int(os.getenv("CAM_MAX_RETRY", "30"))
 CAM_RECONNECT_DELAY = float(os.getenv("CAM_RECONNECT_DELAY", "2.0"))
-
-# Track management
-TRACK_FORGET_SEC    = float(os.getenv("TRACK_FORGET_SEC", "60.0"))  # drop track after N seconds
-MAX_SAVED_TRACKS    = int(os.getenv("MAX_SAVED_TRACKS", "500"))     # LRU eviction
+HEALTH_PORT         = int(os.getenv("HEALTH_PORT", "8880"))
+DIAG_INTERVAL       = float(os.getenv("DIAG_INTERVAL", "10.0"))  # camera diagnostics period
 
 VEHICLE_CLASSES = [2, 3, 5, 7]   # car, motorcycle, bus, truck
 
 PENDING_DIR.mkdir(parents=True, exist_ok=True)
+log = get_logger("CLIENT", camera_id=f"CAM{CAMERA_ID:02d}")
 
-log = get_logger("THIN_CLIENT", camera_id=f"CAM{CAMERA_ID:02d}")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Model
@@ -65,22 +90,32 @@ log.info(f"Loading model: {MODEL_PATH}")
 try:
     model = YOLO(MODEL_PATH)
     log.info(f"Vehicle detection model ready: {MODEL_PATH}")
-except Exception as e:
-    log.critical(f"Cannot load model: {e}")
+except Exception as _e:
+    log.critical(f"Cannot load model: {_e}")
     raise SystemExit(1)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Image Quality Helpers
-# ─────────────────────────────────────────────────────────────────────────────
-def laplacian_variance(gray: np.ndarray) -> float:
-    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
-def frame_quality_score(gray: np.ndarray) -> tuple:
-    """Returns (lap_var, mean_brightness, is_acceptable)."""
-    lap_var = laplacian_variance(gray)
-    mean_br = float(np.mean(gray))
-    ok      = (lap_var >= BLUR_THRESHOLD) and (40 <= mean_br <= 220)
-    return lap_var, mean_br, ok
+# ─────────────────────────────────────────────────────────────────────────────
+# Module instances
+# ─────────────────────────────────────────────────────────────────────────────
+fps_engine    = AdaptiveFPSEngine()
+direction_eng = DirectionEngine(line_y_ratio=VIRTUAL_LINE_Y)
+window_mgr    = WindowManager()
+track_mgr     = TrackManager(forget_sec=TRACK_FORGET_SEC)
+pm            = PipelineMetrics()
+health        = HealthMonitor(
+    camera_ids=[str(CAMERA_ID)],
+    port=HEALTH_PORT,
+)
+
+# Phase-5 modules
+calibrator  = AutoCalibration()     # auto-adjusts quality/blur/fps thresholds
+camera_diag = CameraDiagnostics()   # dirty lens, rain, camera shift detection
+alerts      = AlertCenter()         # INFO/WARNING/CRITICAL routing
+healer      = SelfHealing(
+    alert_fn=lambda sev, msg: alerts.emit(sev, "self_healing", msg)
+)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Camera helpers
@@ -89,156 +124,129 @@ def open_camera(source, max_attempts: int = 5) -> cv2.VideoCapture:
     for attempt in range(1, max_attempts + 1):
         cap = cv2.VideoCapture(source)
         if cap.isOpened():
-            # Reduce buffer: avoid stale frames from RTSP
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             log.info(f"Camera opened: {source} (attempt {attempt})")
+            health.set_camera_status(str(CAMERA_ID), "ok")
+            alerts.info("camera", f"Camera connected: {source}")
             return cap
-        log.warn("-", "Camera Open",
-                 f"Attempt {attempt}/{max_attempts} failed for: {source}")
+        log.warn("-", "Camera Open", f"Attempt {attempt}/{max_attempts} failed: {source}")
+        health.set_camera_status(str(CAMERA_ID), "reconnecting")
+        alerts.warning("camera", f"Camera open failed (attempt {attempt}/{max_attempts}): {source}")
         time.sleep(CAM_RECONNECT_DELAY)
+    health.set_camera_status(str(CAMERA_ID), "lost")
+    alerts.critical("camera", f"Camera lost after {max_attempts} attempts: {source}")
     raise RuntimeError(f"Cannot open camera after {max_attempts} attempts: {source}")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Per-Track Best Frame State
-# ─────────────────────────────────────────────────────────────────────────────
-class TrackState:
-    """Tracks the best candidate frame for a single vehicle track_id."""
-    __slots__ = ("track_id", "saved", "best_score", "first_seen", "last_seen")
-
-    def __init__(self, track_id: int):
-        self.track_id  = track_id
-        self.saved     = False       # Already saved one image for this track
-        self.best_score = -1.0
-        self.first_seen = time.time()
-        self.last_seen  = time.time()
-
-    def touch(self):
-        self.last_seen = time.time()
-
-    def is_stale(self) -> bool:
-        return time.time() - self.last_seen > TRACK_FORGET_SEC
-
-
-class TrackRegistry:
-    """Thread-safe-ish dict of TrackState objects with LRU eviction."""
-
-    def __init__(self):
-        self._tracks: dict[int, TrackState] = {}
-
-    def get_or_create(self, track_id: int) -> TrackState:
-        if track_id not in self._tracks:
-            self._tracks[track_id] = TrackState(track_id)
-        self._tracks[track_id].touch()
-        return self._tracks[track_id]
-
-    def cleanup(self):
-        """Remove stale tracks. Call periodically."""
-        stale = [tid for tid, ts in self._tracks.items() if ts.is_stale()]
-        for tid in stale:
-            del self._tracks[tid]
-        # LRU eviction if too many tracks
-        if len(self._tracks) > MAX_SAVED_TRACKS:
-            oldest = sorted(self._tracks.keys(),
-                            key=lambda k: self._tracks[k].last_seen)
-            for tid in oldest[:len(oldest)//2]:
-                del self._tracks[tid]
-
-    def __len__(self):
-        return len(self._tracks)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Best Frame Scoring
+# Frame save + sidecar JSON
 # ─────────────────────────────────────────────────────────────────────────────
-def compute_frame_score(
-    frame: np.ndarray,
-    x1: int, y1: int, x2: int, y2: int,
-    frame_w: int
-) -> tuple:
-    """
-    Compute quality score for a detected vehicle box.
-    Returns (score, lap_var, mean_br, is_acceptable)
-
-    Conditions for acceptable frame:
-      - Vehicle width ≥ MIN_VEHICLE_RATIO of frame width
-      - Lap variance ≥ BLUR_THRESHOLD
-      - Brightness 40–220
-    """
-    vehicle_w = x2 - x1
-    width_ratio = vehicle_w / frame_w
-
-    if width_ratio < MIN_VEHICLE_RATIO:
-        return -1.0, 0.0, 0.0, False   # Vehicle too small / too far
-
-    vehicle_crop = frame[y1:y2, x1:x2]
-    if vehicle_crop.size == 0:
-        return -1.0, 0.0, 0.0, False
-
-    gray = cv2.cvtColor(vehicle_crop, cv2.COLOR_BGR2GRAY)
-    lap_var, mean_br, ok = frame_quality_score(gray)
-
-    if not ok:
-        return -1.0, lap_var, mean_br, False
-
-    # Score: emphasize sharpness (70%) and size (30%)
-    sharp_norm = min(lap_var / 600.0, 1.0)
-    size_norm  = min(width_ratio / 0.6, 1.0)
-    score = sharp_norm * 0.7 + size_norm * 0.3
-
-    return score, lap_var, mean_br, True
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Save Frame
-# ─────────────────────────────────────────────────────────────────────────────
-def save_best_frame(
-    frame: np.ndarray,
-    track_id: int,
-    score: float,
-    lap_var: float,
-    mean_br: float
+def save_frame(
+    frame:       np.ndarray,
+    track_id:    int,
+    score:       float,
+    components:  dict,
+    frame_index: int,
+    direction:   str,
 ) -> Path:
-    """Resize to max 640px wide and save as JPEG with metadata filename."""
     h, w = frame.shape[:2]
     if w > 640:
         scale = 640 / w
         frame = cv2.resize(frame, (640, int(h * scale)))
 
-    ts       = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    filename = f"frame_{ts}_TRK{track_id}_CAM{CAMERA_ID}.jpg"
-    filepath = PENDING_DIR / filename
+    ts   = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    stem = f"frame_{ts}_TRK{track_id:03d}_F{frame_index}_CAM{CAMERA_ID}"
+    jpg  = PENDING_DIR / f"{stem}.jpg"
+    meta = PENDING_DIR / f"{stem}.json"
 
-    cv2.imwrite(str(filepath), frame, [cv2.IMWRITE_JPEG_QUALITY, 88])
+    cv2.imwrite(str(jpg), frame, [cv2.IMWRITE_JPEG_QUALITY, 88])
+    meta.write_text(json.dumps({
+        "track_id":   f"TRK_{track_id:03d}",
+        "camera_id":  CAMERA_ID,
+        "direction":  direction,
+        "quality":    score,
+        "frame_idx":  frame_index,
+        "components": components,
+        "timestamp":  datetime.now().isoformat(),
+    }, ensure_ascii=False))
+
     log.event(
-        f"TRK_{track_id}", "Best Frame Saved",
-        status="OK",
-        file=filename,
-        score=f"{score:.3f}",
-        blur=f"{lap_var:.1f}",
-        bright=f"{mean_br:.1f}"
+        f"TRK_{track_id:03d}", "Frame Saved",
+        status="OK", file=jpg.name,
+        score=f"{score:.1f}", dir=direction, idx=frame_index,
     )
-    return filepath
+    return jpg
+
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Main Loop
+# Flush Best Frame Window → pending_frames/
+# ─────────────────────────────────────────────────────────────────────────────
+def flush_window(state) -> int:
+    """
+    Save all candidates from the Best Frame Window to pending_frames/.
+    Returns number of frames saved.
+    """
+    if not state.candidates or state.saved:
+        return 0
+
+    ranked = sorted(state.candidates, key=lambda c: c.score, reverse=True)
+    trk    = state.track_id
+
+    log.event(
+        f"TRK_{trk:03d}", "Best Frame Selected",
+        status=f"{len(ranked)} frames",
+        best_score=f"{ranked[0].score:.1f}",
+        dir=state.direction,
+    )
+    pm.inc("best_frame_selected")
+
+    for i, candidate in enumerate(ranked):
+        save_frame(
+            frame=candidate.frame,
+            track_id=trk,
+            score=candidate.score,
+            components=candidate.components,
+            frame_index=i + 1,
+            direction=state.direction,
+        )
+
+    state.candidates.clear()
+    state.saved = True
+    return len(ranked)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main loop
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
-    log.info(f"=== Thin Client LPR v2 starting ===")
-    log.info(f"Camera: {CAMERA_SOURCE}  |  FPS cap: {FPS_LIMIT}")
-    log.info(f"Blur threshold: {BLUR_THRESHOLD}  |  Min vehicle ratio: {MIN_VEHICLE_RATIO:.0%}")
+    log.info("=== ANPR Orchestrator v5 — Enterprise Edge Platform ===")
+    log.info(f"Camera: {CAMERA_SOURCE}  |  Min quality: {MIN_QUALITY_SCORE}/100 (auto-calibrated)")
+    log.info(f"Adaptive FPS: {fps_engine.FPS_IDLE}/{fps_engine.FPS_DETECTED}/{fps_engine.FPS_TRACKING} (idle/vehicle/tracking)")
+    log.info(f"RTSP watchdog: {WATCHDOG_TIMEOUT}s  |  Virtual line: {VIRTUAL_LINE_Y:.0%}")
     log.info(f"Output: {PENDING_DIR.resolve()}")
 
-    # Open camera
+    # Start Phase-5 background services
+    calibrator.start()
+    healer.start()
+    health.start(pipeline_metrics_ref=pm)
+
     try:
         cap = open_camera(CAMERA_SOURCE)
     except RuntimeError as e:
         log.error("-", "Startup", str(e))
+        alerts.critical("startup", str(e))
         return
 
-    registry     = TrackRegistry()
-    cam_fail     = 0
-    frame_count  = 0
-    last_process = 0.0
-    last_cleanup = time.time()
-    fps_interval = 1.0 / FPS_LIMIT   # seconds between processed frames
+    cam_fail        = 0
+    frame_count     = 0
+    last_process    = 0.0
+    last_cleanup    = time.time()
+    last_frame_time = time.time()
+    last_diag       = time.time()   # Camera diagnostics timer
+
+    # FPS measurement
+    fps_measure_t   = time.time()
+    fps_measure_cnt = 0
 
     log.info("Camera open — entering main loop...")
 
@@ -246,37 +254,62 @@ def main():
         while True:
             ret, frame = cap.read()
 
-            # ── Camera failure / reconnect ────────────────────────────────
+            # ── RTSP Watchdog ──────────────────────────────────────────────────
             if not ret:
                 cam_fail += 1
+                elapsed   = time.time() - last_frame_time
                 log.warn("-", "Frame Read",
-                         f"Failed ({cam_fail}/{CAM_MAX_RETRY})")
-                time.sleep(0.5)
-                if cam_fail >= CAM_MAX_RETRY:
-                    log.warn("-", "Camera Reconnect", "Too many failures — reconnecting...")
+                         f"Failed ({cam_fail}), {elapsed:.1f}s since last good frame")
+                health.set_camera_status(str(CAMERA_ID), "reconnecting")
+                time.sleep(0.3)
+
+                if elapsed >= WATCHDOG_TIMEOUT or cam_fail >= CAM_MAX_RETRY:
+                    log.warn("-", "RTSP Watchdog",
+                             f"No frame for {elapsed:.1f}s — reconnecting...")
                     cap.release()
                     try:
-                        cap = open_camera(CAMERA_SOURCE)
-                        cam_fail = 0
+                        cap             = open_camera(CAMERA_SOURCE)
+                        cam_fail        = 0
+                        last_frame_time = time.time()
                         log.event("-", "Camera Reconnect", status="OK")
                     except RuntimeError as e:
                         log.error("-", "Camera Reconnect", str(e))
                         time.sleep(10)
                 continue
 
-            cam_fail = 0
-            frame_count += 1
+            cam_fail        = 0
+            last_frame_time = time.time()
+            frame_count    += 1
 
-            # ── FPS cap (drop excess frames) ──────────────────────────────
-            now = time.time()
-            if now - last_process < fps_interval:
+            # ── Adaptive FPS Cap ───────────────────────────────────────────────
+            now      = time.time()
+            interval = fps_engine.get_interval()
+            if now - last_process < interval:
                 continue
             last_process = now
 
+            # Measure actual FPS
+            fps_measure_cnt += 1
+            if now - fps_measure_t >= 5.0:
+                actual_fps = fps_measure_cnt / (now - fps_measure_t)
+                health.set_fps(actual_fps)
+                fps_measure_cnt = 0
+                fps_measure_t   = now
+
             frame_h, frame_w = frame.shape[:2]
 
-            # ── YOLOv8 + ByteTrack ────────────────────────────────────────
-            # `persist=True` keeps the tracker state across calls
+            # ── Camera Diagnostics (every DIAG_INTERVAL seconds) ──────────────
+            if now - last_diag >= DIAG_INTERVAL:
+                diag = camera_diag.update(frame)
+                last_diag = now
+                if diag.status == "CRITICAL":
+                    alerts.critical("camera_diag", diag.recommendation,
+                                    {"camera_id": CAMERA_ID})
+                elif diag.status == "WARNING":
+                    alerts.warning("camera_diag", diag.recommendation,
+                                   {"camera_id": CAMERA_ID})
+
+            # ── YOLOv8 + ByteTrack ────────────────────────────────────────────
             results = model.track(
                 frame,
                 persist=True,
@@ -284,73 +317,114 @@ def main():
                 classes=VEHICLE_CLASSES,
                 imgsz=640,
                 verbose=False,
-                conf=0.35
+                conf=0.35,
             )
 
+            active_ids: set[int] = set()
+
             if results and results[0].boxes is not None:
-                boxes    = results[0].boxes
-                track_ids_tensor = boxes.id
+                boxes  = results[0].boxes
+                ids_t  = boxes.id
 
-                if track_ids_tensor is not None:
-                    track_ids_list = track_ids_tensor.int().cpu().tolist()
-                    xyxy_list      = boxes.xyxy.cpu().tolist()
-                    cls_list       = boxes.cls.int().cpu().tolist()
-                    conf_list      = boxes.conf.cpu().tolist()
+                if ids_t is not None:
+                    ids   = ids_t.int().cpu().tolist()
+                    xyxys = boxes.xyxy.cpu().tolist()
+                    clss  = boxes.cls.int().cpu().tolist()
+                    confs = boxes.conf.cpu().tolist()
 
-                    for track_id, xyxy, cls, det_conf in zip(
-                        track_ids_list, xyxy_list, cls_list, conf_list
-                    ):
+                    for track_id, xyxy, cls, det_conf in zip(ids, xyxys, clss, confs):
+                        active_ids.add(track_id)
                         x1, y1, x2, y2 = map(int, xyxy)
-                        state = registry.get_or_create(track_id)
+                        state = track_mgr.get_or_create(track_id)
+                        pm.inc("vehicle_seen")
 
                         if state.saved:
-                            # Already captured best frame for this track — skip
                             continue
 
-                        score, lap_var, mean_br, acceptable = compute_frame_score(
-                            frame, x1, y1, x2, y2, frame_w
+                        # ── Direction Detection ───────────────────────────────
+                        cx = (x1 + x2) / 2.0
+                        cy = (y1 + y2) / 2.0
+                        detected_dir = direction_eng.update(track_id, cx, cy, frame_h)
+                        if detected_dir:
+                            state.direction = detected_dir
+
+                        # ── Speed for dynamic window size ──────────────────────
+                        window_mgr.update_centroid(track_id, cx, cy)
+                        window_size = window_mgr.get_window_size_for_track(track_id)
+
+                        trk_label = f"TRK_{track_id:03d}"
+
+                        # ── 6-Component Quality Score (calibrated thresholds) ──
+                        qr = compute_quality(frame, x1, y1, x2, y2)
+
+                        # Feed metrics to auto-calibration engine
+                        calibrator.record_frame(
+                            blur=qr.components.get("lap_var", 0.0),
+                            brightness=qr.components.get("mean_brightness", 128.0),
+                            quality=qr.score,
+                            speed=window_mgr.get_speed(track_id),
                         )
 
-                        trk_label = f"TRK_{track_id}"
+                        # Collect rejection reasons for metrics
+                        if qr.components.get("reflection_status") == "reject":
+                            pm.inc("rejected_reflection")
+                        elif qr.components.get("lap_var", 9999) < calibrator.blur_threshold:
+                            pm.inc("rejected_blur")
 
-                        if not acceptable:
-                            log.warn(
-                                trk_label, "Frame Quality",
-                                f"Rejected (blur={lap_var:.1f}, bright={mean_br:.1f}, "
-                                f"ratio={(x2-x1)/frame_w:.2f})"
-                            )
+                        # Use calibrated quality threshold (overrides env var)
+                        effective_quality_gate = calibrator.quality_threshold
+                        if not qr.acceptable or qr.score < effective_quality_gate:
+                            log.warn(trk_label, "Quality Gate",
+                                     f"Rejected score={qr.score:.1f} "
+                                     f"(gate={effective_quality_gate:.0f}) "
+                                     f"blur={qr.components.get('lap_var', 0):.0f} "
+                                     f"refl={qr.components.get('reflection_status', '?')}")
                             continue
 
-                        log.event(
-                            trk_label, "Vehicle Detected",
-                            status="TRACKING",
-                            cls=cls, det_conf=f"{det_conf:.2f}",
-                            score=f"{score:.3f}"
-                        )
+                        log.event(trk_label, "Vehicle Detected",
+                                  status="CANDIDATE",
+                                  score=f"{qr.score:.1f}",
+                                  cls=cls, conf=f"{det_conf:.2f}",
+                                  window=window_size,
+                                  dir=state.direction)
 
-                        # Update best if this frame is better
-                        if score > state.best_score:
-                            state.best_score = score
-                            # We capture immediately when score > 0 (any acceptable frame)
-                            # to avoid missing the vehicle as it passes quickly
-                            save_best_frame(frame, track_id, score, lap_var, mean_br)
-                            state.saved = True   # ONE save per track
+                        # ── Best Frame Window ─────────────────────────────────
+                        state.add_candidate(frame, qr.score, qr.components, window_size)
 
-            # ── Periodic cleanup ──────────────────────────────────────────
-            if now - last_cleanup > 30:
-                before = len(registry)
-                registry.cleanup()
-                after = len(registry)
-                if before != after:
+                        if state.is_window_full(window_size):
+                            flush_window(state)
+
+            # ── Update Adaptive FPS engine ─────────────────────────────────────
+            fps_engine.update(len(active_ids))
+            window_mgr.cleanup_all(active_ids)
+
+            # ── Periodic cleanup — flush stale/lost tracks ─────────────────────
+            if now - last_cleanup > 10.0:
+                removed = track_mgr.cleanup()
+                direction_eng.cleanup_stale()
+
+                for s in removed:
+                    if not s.saved and s.candidates:
+                        s.direction = direction_eng.infer_direction(s.track_id)
+                        flush_window(s)
+                    direction_eng.cleanup(s.track_id)
+                    window_mgr.cleanup(s.track_id)
+
+                health.set_queue_size(len(list(PENDING_DIR.glob("*.jpg"))))
+
+                if removed:
                     log.event("-", "Registry Cleanup",
-                               status="OK", removed=before - after, active=after)
+                              status="OK",
+                              removed=len(removed),
+                              active=track_mgr.active_count())
                 last_cleanup = now
 
     except KeyboardInterrupt:
         log.info("Interrupted by user — shutting down.")
     finally:
         cap.release()
-        log.info("Camera released. Thin client stopped.")
+        log.info("Camera released. Orchestrator stopped.")
+        log.info(f"Final pipeline metrics: {pm.summary()}")
 
 
 if __name__ == "__main__":

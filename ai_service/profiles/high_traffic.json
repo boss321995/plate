@@ -1,0 +1,9 @@
+{
+  "mode": "high_traffic",
+  "blur_threshold": 80.0,
+  "quality_threshold": 70.0,
+  "gamma": 1.0,
+  "window_size": 3,
+  "fps_limit": 11.0,
+  "description": "High-traffic: fast window, high FPS, slightly relaxed quality gate"
+}

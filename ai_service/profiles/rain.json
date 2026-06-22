@@ -1,0 +1,9 @@
+{
+  "mode": "rain",
+  "blur_threshold": 50.0,
+  "quality_threshold": 60.0,
+  "gamma": 0.8,
+  "window_size": 8,
+  "fps_limit": 11.0,
+  "description": "Rain mode: very relaxed blur threshold, max frames, high FPS to catch clear moments"
+}

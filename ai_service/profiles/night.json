@@ -1,0 +1,9 @@
+{
+  "mode": "night",
+  "blur_threshold": 60.0,
+  "quality_threshold": 65.0,
+  "gamma": 0.65,
+  "window_size": 8,
+  "fps_limit": 8.0,
+  "description": "Night mode: relaxed thresholds, more frames, gamma brightening"
+}

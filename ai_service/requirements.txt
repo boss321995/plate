@@ -2,7 +2,10 @@
 opencv-python>=4.8
 opencv-contrib-python>=4.8   # DNN Super Resolution (ESPCN) - optional
 ultralytics>=8.3              # YOLOv8 + ByteTrack built-in
-easyocr>=1.7
+
+# OCR — PaddleOCR (PP-OCRv4, replaces EasyOCR)
+paddlepaddle>=2.6.0           # CPU-only build (use paddlepaddle-gpu for CUDA)
+paddleocr>=2.9.0              # Includes Thai language model
 
 # Web server
 fastapi>=0.110
@@ -16,9 +19,8 @@ requests>=2.31
 numpy>=1.26
 Pillow>=10.0
 torch>=2.0
-torchvision>=0.15            # ResNet18 fingerprint extractor
+torchvision>=0.15             # ResNet18 fingerprint extractor
 
 # Utils
 python-dotenv>=1.0
 pytz>=2024.1
-difflib                      # stdlib — listed for documentation
