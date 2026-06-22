@@ -12,5 +12,10 @@ export default defineNuxtConfig({
         { name: 'description', content: 'Vehicle License Plate Recognition System' }
       ]
     }
+  },
+  runtimeConfig: {
+    public: {
+      apiBase: '/api/plate'
+    }
   }
 })

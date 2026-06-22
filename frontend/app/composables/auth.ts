@@ -31,8 +31,9 @@ export const useAuth = () => {
 
   const login = async (username: string, password: string): Promise<{ success: boolean; message?: string }> => {
     isLoading.value = true
+    const apiBase = useRuntimeConfig().public.apiBase || ''
     try {
-      const res = await fetch('http://localhost:3001/api/auth/login', {
+      const res = await fetch(`${apiBase}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password })
@@ -65,8 +66,9 @@ export const useAuth = () => {
 
   const checkAuth = async (): Promise<boolean> => {
     if (!token.value) return false
+    const apiBase = useRuntimeConfig().public.apiBase || ''
     try {
-      const res = await fetch('http://localhost:3001/api/auth/me', {
+      const res = await fetch(`${apiBase}/api/auth/me`, {
         headers: { Authorization: `Bearer ${token.value}` }
       })
       const data = await res.json()

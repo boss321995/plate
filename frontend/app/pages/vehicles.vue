@@ -145,12 +145,15 @@ const form = ref({
   role: 'STAFF'
 })
 
-const API_BASE = 'http://localhost:3001/api/vehicles'
+const apiBase = computed(() => {
+  const base = useRuntimeConfig().public.apiBase || ''
+  return `${base}/api/vehicles`
+})
 
 const fetchVehicles = async () => {
   loading.value = true
   try {
-    const res = await fetch(API_BASE)
+    const res = await fetch(apiBase.value)
     const data = await res.json()
     if (data.success) {
       vehicles.value = data.data
@@ -185,7 +188,7 @@ const submitForm = async () => {
       plate_type: 'NORMAL'
     }
 
-    const res = await fetch(API_BASE, {
+    const res = await fetch(apiBase.value, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -208,7 +211,7 @@ const deleteVehicle = async (id) => {
   if (!confirm('Are you sure you want to delete this vehicle?')) return
   
   try {
-    const res = await fetch(`${API_BASE}/${id}`, { method: 'DELETE' })
+    const res = await fetch(`${apiBase.value}/${id}`, { method: 'DELETE' })
     if (res.ok) {
       vehicles.value = vehicles.value.filter(v => v.id !== id)
     }

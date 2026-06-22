@@ -92,11 +92,21 @@ const overstayCount = computed(() => {
 })
 
 const fetchActiveVehicles = async () => {
+  loading.value = true
+  const apiBase = useRuntimeConfig().public.apiBase || ''
   try {
-    const res = await fetch('http://localhost:3001/api/parking/active')
+    const res = await fetch(`${apiBase}/api/parking/active`)
     const data = await res.json()
     if (data.success) {
       activeVehicles.value = data.data
+      
+      const resStats = await fetch(`${apiBase}/api/parking/stats`)
+      const statsData = await resStats.json()
+      if (statsData.success) {
+        stats.value[0].value = statsData.data.total
+        stats.value[1].value = statsData.data.staff
+        stats.value[2].value = statsData.data.visitor
+      }
     }
   } catch (err) {
     console.error('Failed to fetch active vehicles', err)

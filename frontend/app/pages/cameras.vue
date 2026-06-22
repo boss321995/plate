@@ -163,8 +163,6 @@ const form = ref({
   status: 'Online'
 })
 
-const API_BASE = 'http://localhost:3001/api/cameras'
-
 const fetchCameras = async () => {
   loading.value = true
   try {
