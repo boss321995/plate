@@ -34,6 +34,8 @@ __pycache__/
 
 # Local debug/output captures
 debug_plates/
+pending_frames/
+**/pending_frames/
 
 # OS/editor files
 .DS_Store

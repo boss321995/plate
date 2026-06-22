@@ -1,147 +1,357 @@
-import cv2
-import requests
-import time
+"""
+client.py — Production Thin Client LPR with ByteTrack
+======================================================
+
+Pipeline:
+  RTSP/Camera
+  → Motion Gate (cheap pixel diff — skips dead frames fast)
+  → YOLOv8 Vehicle Detection with ByteTrack (ultralytics built-in)
+  → Per-track Best Frame Selection
+      ✓ Vehicle width ≥ 20% of frame
+      ✓ Laplacian variance ≥ BLUR_THRESHOLD (blur rejection)
+      ✓ Brightness 40–220
+  → Save ONE best frame per track_id to pending_frames/
+
+Environment:
+  CAMERA_SOURCE     0 / RTSP URL           0
+  CAMERA_ID         Camera label           1
+  FPS_LIMIT         Max frames processed   5
+  BLUR_THRESHOLD    Min sharpness          100
+  MIN_VEHICLE_RATIO Min vehicle width %    0.20
+  PENDING_DIR       Output folder          pending_frames
+  MODEL_PATH        YOLOv8 model path      auto
+"""
+
 import os
-import threading
-import queue
+import cv2
+import time
 import numpy as np
+from datetime import datetime
+from pathlib import Path
+from ultralytics import YOLO
+from logger_lpr import get_logger
 
-API_URL = os.getenv("API_URL", "http://100.127.92.120/api/plate/ai/detect_frame")
-API_KEY = os.getenv("API_KEY", "PLATE-AI-KEY-totacademy-2026")
-CAMERA_SOURCE = 0
-FPS_LIMIT = 5  # ส่งภาพสูงสุด 5 ภาพต่อวินาที
-MOTION_THRESHOLD = 3000  # จำนวนพิกเซลที่เปลี่ยนไป (ยิ่งน้อยยิ่งไวต่อการเคลื่อนไหว)
+# ─────────────────────────────────────────────────────────────────────────────
+# Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+_source = os.getenv("CAMERA_SOURCE", "0")
+CAMERA_SOURCE     = int(_source) if str(_source).isdigit() else _source
+CAMERA_ID         = int(os.getenv("CAMERA_ID", "1"))
+FPS_LIMIT         = float(os.getenv("FPS_LIMIT", "5"))          # max 5 FPS
+BLUR_THRESHOLD    = float(os.getenv("BLUR_THRESHOLD", "100"))   # Laplacian variance
+MIN_VEHICLE_RATIO = float(os.getenv("MIN_VEHICLE_RATIO", "0.20"))
+PENDING_DIR       = Path(os.getenv("PENDING_DIR", "pending_frames"))
+MODEL_PATH        = os.getenv("MODEL_PATH",
+                    "yolov8n.onnx" if os.path.exists("yolov8n.onnx") else "yolov8n.pt")
 
-print(f"🚀 Starting Thin Client LPR (Async + Motion Detection)...")
-print(f"📡 Sending to: {API_URL}")
+# Camera reconnect
+CAM_MAX_RETRY       = int(os.getenv("CAM_MAX_RETRY", "30"))
+CAM_RECONNECT_DELAY = float(os.getenv("CAM_RECONNECT_DELAY", "2.0"))
 
-# ============================================================
-# Background API Worker (Thread)
-# ============================================================
-frame_queue = queue.Queue(maxsize=1)  # เก็บเฟรมล่าสุดที่จะส่ง (ขนาด 1 เพื่อลดอาการค้าง)
-result_dict = {"boxes": []}  # เก็บกล่องข้อความจาก Server เพื่อนำมาวาด
+# Track management
+TRACK_FORGET_SEC    = float(os.getenv("TRACK_FORGET_SEC", "60.0"))  # drop track after N seconds
+MAX_SAVED_TRACKS    = int(os.getenv("MAX_SAVED_TRACKS", "500"))     # LRU eviction
 
-def api_worker():
-    """ส่งภาพไปที่ Server แบบเบื้องหลัง เพื่อให้วิดีโอทำงานลื่นไหล 30 FPS ตลอดเวลา"""
-    while True:
-        try:
-            # ดึงภาพจากคิว (ถ้าไม่มีมันจะรอตรงนี้)
-            frame_to_send = frame_queue.get()
-            
-            # บีบอัดเป็น JPEG เพื่อส่งเข้าเน็ต
-            _, img_encoded = cv2.imencode('.jpg', frame_to_send, [cv2.IMWRITE_JPEG_QUALITY, 85])
-            
-            files = {"file": ("frame.jpg", img_encoded.tobytes(), "image/jpeg")}
-            headers = {"X-API-Key": API_KEY}
-            
-            # ยิงขึ้น Server
-            res = requests.post(API_URL, files=files, headers=headers, timeout=1.5)
-            
-            if res.status_code == 200:
-                data = res.json()
-                result_dict["boxes"] = data.get("detections", [])
-            
-            frame_queue.task_done()
-        except requests.exceptions.RequestException:
-            # เน็ตหลุดชั่วคราว ให้ข้ามไป ไม่ให้โปรแกรมแครช
-            pass
+VEHICLE_CLASSES = [2, 3, 5, 7]   # car, motorcycle, bus, truck
 
-# เริ่ม Thread ทันที
-threading.Thread(target=api_worker, daemon=True).start()
+PENDING_DIR.mkdir(parents=True, exist_ok=True)
 
-# ============================================================
-# Main Camera Loop (Motion Detection)
-# ============================================================
-cap = cv2.VideoCapture(CAMERA_SOURCE)
-if not cap.isOpened():
-    print("❌ Error: Cannot open camera.")
-    exit(1)
+log = get_logger("THIN_CLIENT", camera_id=f"CAM{CAMERA_ID:02d}")
 
-# เตรียม Background (สำหรับจับความเคลื่อนไหว)
-ret, first_frame = cap.read()
-if ret:
-    gray = cv2.cvtColor(first_frame, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (21, 21), 0)
-    avg_bg = np.float32(gray)
-else:
-    avg_bg = None
+# ─────────────────────────────────────────────────────────────────────────────
+# Model
+# ─────────────────────────────────────────────────────────────────────────────
+log.info(f"Loading model: {MODEL_PATH}")
+try:
+    model = YOLO(MODEL_PATH)
+    log.info(f"Vehicle detection model ready: {MODEL_PATH}")
+except Exception as e:
+    log.critical(f"Cannot load model: {e}")
+    raise SystemExit(1)
 
-last_send_time = 0
+# ─────────────────────────────────────────────────────────────────────────────
+# Image Quality Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+def laplacian_variance(gray: np.ndarray) -> float:
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
-while True:
-    ret, frame = cap.read()
-    if not ret:
-        break
+def frame_quality_score(gray: np.ndarray) -> tuple:
+    """Returns (lap_var, mean_brightness, is_acceptable)."""
+    lap_var = laplacian_variance(gray)
+    mean_br = float(np.mean(gray))
+    ok      = (lap_var >= BLUR_THRESHOLD) and (40 <= mean_br <= 220)
+    return lap_var, mean_br, ok
 
-    now = time.time()
-    motion_detected = False
+# ─────────────────────────────────────────────────────────────────────────────
+# Camera helpers
+# ─────────────────────────────────────────────────────────────────────────────
+def open_camera(source, max_attempts: int = 5) -> cv2.VideoCapture:
+    for attempt in range(1, max_attempts + 1):
+        cap = cv2.VideoCapture(source)
+        if cap.isOpened():
+            # Reduce buffer: avoid stale frames from RTSP
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            log.info(f"Camera opened: {source} (attempt {attempt})")
+            return cap
+        log.warn("-", "Camera Open",
+                 f"Attempt {attempt}/{max_attempts} failed for: {source}")
+        time.sleep(CAM_RECONNECT_DELAY)
+    raise RuntimeError(f"Cannot open camera after {max_attempts} attempts: {source}")
 
-    # 1. Motion Detection (ตรวจสอบความเคลื่อนไหว)
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (21, 21), 0)
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-Track Best Frame State
+# ─────────────────────────────────────────────────────────────────────────────
+class TrackState:
+    """Tracks the best candidate frame for a single vehicle track_id."""
+    __slots__ = ("track_id", "saved", "best_score", "first_seen", "last_seen")
 
-    if avg_bg is not None:
-        # อัปเดตพื้นหลังอย่างช้าๆ ให้เข้ากับสภาพแสงที่เปลี่ยนไป
-        cv2.accumulateWeighted(gray, avg_bg, 0.05)
-        bg_uint8 = cv2.convertScaleAbs(avg_bg)
+    def __init__(self, track_id: int):
+        self.track_id  = track_id
+        self.saved     = False       # Already saved one image for this track
+        self.best_score = -1.0
+        self.first_seen = time.time()
+        self.last_seen  = time.time()
 
-        # หาความแตกต่าง
-        frame_diff = cv2.absdiff(bg_uint8, gray)
-        thresh = cv2.threshold(frame_diff, 25, 255, cv2.THRESH_BINARY)[1]
-        thresh = cv2.dilate(thresh, None, iterations=2)
+    def touch(self):
+        self.last_seen = time.time()
 
-        # นับพิกเซลความแตกต่าง
-        motion_pixels = cv2.countNonZero(thresh)
-        if motion_pixels > MOTION_THRESHOLD:
-            motion_detected = True
-    else:
-        avg_bg = np.float32(gray)
+    def is_stale(self) -> bool:
+        return time.time() - self.last_seen > TRACK_FORGET_SEC
 
-    # 2. ถ้ารถขยับ & ถึงรอบส่งภาพ ก็สั่งส่งภาพ
-    if motion_detected and (now - last_send_time) >= (1.0 / FPS_LIMIT):
-        # ย่อขนาดเพื่อให้ส่งเน็ตได้ลื่นปรี๊ด
-        h, w = frame.shape[:2]
-        new_w = 640
-        new_h = int((new_w / w) * h)
-        small_frame = cv2.resize(frame, (new_w, new_h))
-        
-        # ยัดภาพใส่ Queue ไปให้ Background Thread จัดการ (ถ้าคิวไม่เต็ม)
-        if not frame_queue.full():
-            frame_queue.put(small_frame)
-            last_send_time = now
 
-    # 3. วาดผลลัพธ์ (สเกลพิกัดกลับเป็นขนาดเต็มจอ)
+class TrackRegistry:
+    """Thread-safe-ish dict of TrackState objects with LRU eviction."""
+
+    def __init__(self):
+        self._tracks: dict[int, TrackState] = {}
+
+    def get_or_create(self, track_id: int) -> TrackState:
+        if track_id not in self._tracks:
+            self._tracks[track_id] = TrackState(track_id)
+        self._tracks[track_id].touch()
+        return self._tracks[track_id]
+
+    def cleanup(self):
+        """Remove stale tracks. Call periodically."""
+        stale = [tid for tid, ts in self._tracks.items() if ts.is_stale()]
+        for tid in stale:
+            del self._tracks[tid]
+        # LRU eviction if too many tracks
+        if len(self._tracks) > MAX_SAVED_TRACKS:
+            oldest = sorted(self._tracks.keys(),
+                            key=lambda k: self._tracks[k].last_seen)
+            for tid in oldest[:len(oldest)//2]:
+                del self._tracks[tid]
+
+    def __len__(self):
+        return len(self._tracks)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Best Frame Scoring
+# ─────────────────────────────────────────────────────────────────────────────
+def compute_frame_score(
+    frame: np.ndarray,
+    x1: int, y1: int, x2: int, y2: int,
+    frame_w: int
+) -> tuple:
+    """
+    Compute quality score for a detected vehicle box.
+    Returns (score, lap_var, mean_br, is_acceptable)
+
+    Conditions for acceptable frame:
+      - Vehicle width ≥ MIN_VEHICLE_RATIO of frame width
+      - Lap variance ≥ BLUR_THRESHOLD
+      - Brightness 40–220
+    """
+    vehicle_w = x2 - x1
+    width_ratio = vehicle_w / frame_w
+
+    if width_ratio < MIN_VEHICLE_RATIO:
+        return -1.0, 0.0, 0.0, False   # Vehicle too small / too far
+
+    vehicle_crop = frame[y1:y2, x1:x2]
+    if vehicle_crop.size == 0:
+        return -1.0, 0.0, 0.0, False
+
+    gray = cv2.cvtColor(vehicle_crop, cv2.COLOR_BGR2GRAY)
+    lap_var, mean_br, ok = frame_quality_score(gray)
+
+    if not ok:
+        return -1.0, lap_var, mean_br, False
+
+    # Score: emphasize sharpness (70%) and size (30%)
+    sharp_norm = min(lap_var / 600.0, 1.0)
+    size_norm  = min(width_ratio / 0.6, 1.0)
+    score = sharp_norm * 0.7 + size_norm * 0.3
+
+    return score, lap_var, mean_br, True
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Save Frame
+# ─────────────────────────────────────────────────────────────────────────────
+def save_best_frame(
+    frame: np.ndarray,
+    track_id: int,
+    score: float,
+    lap_var: float,
+    mean_br: float
+) -> Path:
+    """Resize to max 640px wide and save as JPEG with metadata filename."""
     h, w = frame.shape[:2]
-    new_w = 640
-    new_h = int((new_w / w) * h)
-    scale_x = w / new_w
-    scale_y = h / new_h
-    
-    # วาดกรอบรถ/ป้าย ที่ได้จาก Server
-    for det in result_dict["boxes"]:
-        if "vehicle_box" in det:
-            bx1, by1, bx2, by2 = det["vehicle_box"]
-            x1, y1 = int(bx1 * scale_x), int(by1 * scale_y)
-            x2, y2 = int(bx2 * scale_x), int(by2 * scale_y)
-            
-            status = det.get("status", "")
-            # สีเขียว = ตรวจจับอยู่ / สีแดง = ส่งเข้า Database ไปแล้ว
-            color = (0, 0, 255) if status == "sent" else (0, 255, 0)
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            
-            if "plate" in det and det["plate"]:
-                cv2.putText(frame, f"{det['plate']}", (x1, max(0, y1 - 10)), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
+    if w > 640:
+        scale = 640 / w
+        frame = cv2.resize(frame, (640, int(h * scale)))
 
-    # วาดแจ้งเตือนว่ามีการเคลื่อนไหว
-    if motion_detected:
-        cv2.putText(frame, "MOTION DETECTED", (10, 30), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+    ts       = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    filename = f"frame_{ts}_TRK{track_id}_CAM{CAMERA_ID}.jpg"
+    filepath = PENDING_DIR / filename
 
-    # แสดงผลวิดีโอ (ลื่นไหลไม่มีกระตุก)
-    cv2.imshow("Thin Client LPR (Async + Motion)", frame)
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
+    cv2.imwrite(str(filepath), frame, [cv2.IMWRITE_JPEG_QUALITY, 88])
+    log.event(
+        f"TRK_{track_id}", "Best Frame Saved",
+        status="OK",
+        file=filename,
+        score=f"{score:.3f}",
+        blur=f"{lap_var:.1f}",
+        bright=f"{mean_br:.1f}"
+    )
+    return filepath
 
-cap.release()
-cv2.destroyAllWindows()
+# ─────────────────────────────────────────────────────────────────────────────
+# Main Loop
+# ─────────────────────────────────────────────────────────────────────────────
+def main():
+    log.info(f"=== Thin Client LPR v2 starting ===")
+    log.info(f"Camera: {CAMERA_SOURCE}  |  FPS cap: {FPS_LIMIT}")
+    log.info(f"Blur threshold: {BLUR_THRESHOLD}  |  Min vehicle ratio: {MIN_VEHICLE_RATIO:.0%}")
+    log.info(f"Output: {PENDING_DIR.resolve()}")
+
+    # Open camera
+    try:
+        cap = open_camera(CAMERA_SOURCE)
+    except RuntimeError as e:
+        log.error("-", "Startup", str(e))
+        return
+
+    registry     = TrackRegistry()
+    cam_fail     = 0
+    frame_count  = 0
+    last_process = 0.0
+    last_cleanup = time.time()
+    fps_interval = 1.0 / FPS_LIMIT   # seconds between processed frames
+
+    log.info("Camera open — entering main loop...")
+
+    try:
+        while True:
+            ret, frame = cap.read()
+
+            # ── Camera failure / reconnect ────────────────────────────────
+            if not ret:
+                cam_fail += 1
+                log.warn("-", "Frame Read",
+                         f"Failed ({cam_fail}/{CAM_MAX_RETRY})")
+                time.sleep(0.5)
+                if cam_fail >= CAM_MAX_RETRY:
+                    log.warn("-", "Camera Reconnect", "Too many failures — reconnecting...")
+                    cap.release()
+                    try:
+                        cap = open_camera(CAMERA_SOURCE)
+                        cam_fail = 0
+                        log.event("-", "Camera Reconnect", status="OK")
+                    except RuntimeError as e:
+                        log.error("-", "Camera Reconnect", str(e))
+                        time.sleep(10)
+                continue
+
+            cam_fail = 0
+            frame_count += 1
+
+            # ── FPS cap (drop excess frames) ──────────────────────────────
+            now = time.time()
+            if now - last_process < fps_interval:
+                continue
+            last_process = now
+
+            frame_h, frame_w = frame.shape[:2]
+
+            # ── YOLOv8 + ByteTrack ────────────────────────────────────────
+            # `persist=True` keeps the tracker state across calls
+            results = model.track(
+                frame,
+                persist=True,
+                tracker="bytetrack.yaml",
+                classes=VEHICLE_CLASSES,
+                imgsz=640,
+                verbose=False,
+                conf=0.35
+            )
+
+            if results and results[0].boxes is not None:
+                boxes    = results[0].boxes
+                track_ids_tensor = boxes.id
+
+                if track_ids_tensor is not None:
+                    track_ids_list = track_ids_tensor.int().cpu().tolist()
+                    xyxy_list      = boxes.xyxy.cpu().tolist()
+                    cls_list       = boxes.cls.int().cpu().tolist()
+                    conf_list      = boxes.conf.cpu().tolist()
+
+                    for track_id, xyxy, cls, det_conf in zip(
+                        track_ids_list, xyxy_list, cls_list, conf_list
+                    ):
+                        x1, y1, x2, y2 = map(int, xyxy)
+                        state = registry.get_or_create(track_id)
+
+                        if state.saved:
+                            # Already captured best frame for this track — skip
+                            continue
+
+                        score, lap_var, mean_br, acceptable = compute_frame_score(
+                            frame, x1, y1, x2, y2, frame_w
+                        )
+
+                        trk_label = f"TRK_{track_id}"
+
+                        if not acceptable:
+                            log.warn(
+                                trk_label, "Frame Quality",
+                                f"Rejected (blur={lap_var:.1f}, bright={mean_br:.1f}, "
+                                f"ratio={(x2-x1)/frame_w:.2f})"
+                            )
+                            continue
+
+                        log.event(
+                            trk_label, "Vehicle Detected",
+                            status="TRACKING",
+                            cls=cls, det_conf=f"{det_conf:.2f}",
+                            score=f"{score:.3f}"
+                        )
+
+                        # Update best if this frame is better
+                        if score > state.best_score:
+                            state.best_score = score
+                            # We capture immediately when score > 0 (any acceptable frame)
+                            # to avoid missing the vehicle as it passes quickly
+                            save_best_frame(frame, track_id, score, lap_var, mean_br)
+                            state.saved = True   # ONE save per track
+
+            # ── Periodic cleanup ──────────────────────────────────────────
+            if now - last_cleanup > 30:
+                before = len(registry)
+                registry.cleanup()
+                after = len(registry)
+                if before != after:
+                    log.event("-", "Registry Cleanup",
+                               status="OK", removed=before - after, active=after)
+                last_cleanup = now
+
+    except KeyboardInterrupt:
+        log.info("Interrupted by user — shutting down.")
+    finally:
+        cap.release()
+        log.info("Camera released. Thin client stopped.")
+
+
+if __name__ == "__main__":
+    main()

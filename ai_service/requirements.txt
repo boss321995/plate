@@ -1,11 +1,24 @@
-opencv-python
-ultralytics
-easyocr
-requests
-python-dotenv
-playwright
-pytz
-fastapi
-uvicorn
-python-multipart
-torchvision
+# Core AI
+opencv-python>=4.8
+opencv-contrib-python>=4.8   # DNN Super Resolution (ESPCN) - optional
+ultralytics>=8.3              # YOLOv8 + ByteTrack built-in
+easyocr>=1.7
+
+# Web server
+fastapi>=0.110
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+
+# HTTP / networking
+requests>=2.31
+
+# Data Science
+numpy>=1.26
+Pillow>=10.0
+torch>=2.0
+torchvision>=0.15            # ResNet18 fingerprint extractor
+
+# Utils
+python-dotenv>=1.0
+pytz>=2024.1
+difflib                      # stdlib — listed for documentation

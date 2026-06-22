@@ -5,13 +5,18 @@
   "main": "index.js",
   "scripts": {
     "dev": "nodemon src/index.ts",
+    "start": "ts-node src/index.ts",
+    "migrate": "ts-node src/migrate.ts",
+    "build": "tsc",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@types/compression": "^1.8.1",
     "@types/jsonwebtoken": "^9.0.10",
+    "compression": "^1.8.1",
     "cors": "^2.8.6",
     "date-fns": "^4.2.1",
     "dotenv": "^17.4.2",
