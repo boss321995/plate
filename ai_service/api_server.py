@@ -7,6 +7,7 @@ import re
 import difflib
 import json
 import logging
+import base64
 from datetime import datetime
 from collections import Counter
 from fastapi import FastAPI, File, UploadFile, Header, HTTPException, BackgroundTasks
@@ -281,7 +282,15 @@ def send_to_backend(payload):
         else:
             log.error(f"Backend returned {res.status_code}: {res.text}")
     except Exception as e:
-        log.error(f"Failed to send to backend: {e}")
+        log.error(f"Failed to send: {e}")
+
+def send_live_frame(frame_b64, camera_id=1):
+    try:
+        headers = {"X-API-Key": API_KEY}
+        live_url = API_URL.replace('/api/detect', '/api/cameras/live_frame')
+        requests.post(live_url, json={"camera_id": camera_id, "frame": frame_b64}, headers=headers, timeout=1)
+    except Exception as e:
+        log.debug(f"Failed to send live frame: {e}")
 
 # ============================================================
 # API Endpoints
@@ -456,5 +465,26 @@ async def detect_frame(file: UploadFile = File(...), background_tasks: Backgroun
                     "vehicle_color": v_color,
                     "status": "no_plate_detected"
                 })
+
+    # --- Send Live Frame to Backend ---
+    try:
+        display_frame = cv2.resize(frame, (640, int(640 * frame.shape[0] / frame.shape[1])))
+        for d in detections:
+            x1, y1, x2, y2 = d["vehicle_box"]
+            # Scale coordinates
+            scale_x = 640 / frame.shape[1]
+            scale_y = display_frame.shape[0] / frame.shape[0]
+            sx1, sy1 = int(x1 * scale_x), int(y1 * scale_y)
+            sx2, sy2 = int(x2 * scale_x), int(y2 * scale_y)
+            
+            cv2.rectangle(display_frame, (sx1, sy1), (sx2, sy2), (0, 255, 0), 2)
+            if d.get("plate"):
+                cv2.putText(display_frame, f"{d['plate']}", (sx1, max(0, sy1-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+        _, buffer = cv2.imencode('.jpg', display_frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
+        frame_b64 = f"data:image/jpeg;base64,{base64.b64encode(buffer).decode('utf-8')}"
+        background_tasks.add_task(send_live_frame, frame_b64, 1)
+    except Exception as e:
+        log.warning(f"Error encoding live frame: {e}")
 
     return {"detections": detections}

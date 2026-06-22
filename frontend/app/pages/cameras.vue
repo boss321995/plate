@@ -28,12 +28,12 @@
         <!-- Video Placeholder -->
         <div class="h-48 relative bg-slate-800 flex items-center justify-center overflow-hidden border-b border-slate-200 dark:border-white/5">
           <!-- Real Video Feed -->
-          <img v-if="camera.stream_url && camera.status === 'Online'" :src="camera.stream_url" class="absolute inset-0 w-full h-full object-cover z-0" alt="Live Feed" @error="$event.target.style.display='none'" />
+          <img v-if="camera.liveFeed || (camera.stream_url && camera.status === 'Online')" :src="camera.liveFeed || camera.stream_url" class="absolute inset-0 w-full h-full object-cover z-0" alt="Live Feed" @error="$event.target.style.display='none'" />
           
           <!-- Background Grid for Tech Feel -->
-          <div v-if="!camera.stream_url" class="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAiIGhlaWdodD0iMjAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PGNpcmNsZSBjeD0iMiIgY3k9IjIiIHI9IjIiIGZpbGw9InJnYmEoMjU1LDI1NSwyNTUsMC4wNSkiLz48L3N2Zz4=')] opacity-50"></div>
+          <div v-if="!camera.liveFeed && !camera.stream_url" class="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAiIGhlaWdodD0iMjAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PGNpcmNsZSBjeD0iMiIgY3k9IjIiIHI9IjIiIGZpbGw9InJnYmEoMjU1LDI1NSwyNTUsMC4wNSkiLz48L3N2Zz4=')] opacity-50"></div>
           
-          <div v-if="!camera.stream_url && camera.status === 'Online'" class="relative z-10 flex flex-col items-center">
+          <div v-if="!camera.liveFeed && !camera.stream_url && camera.status === 'Online'" class="relative z-10 flex flex-col items-center">
             <div class="w-16 h-16 rounded-full border-2 border-accent-cyan/30 flex items-center justify-center mb-2">
               <div class="w-12 h-12 rounded-full border border-accent-cyan/50 flex items-center justify-center animate-[spin_4s_linear_infinite]">
                 <svg class="w-6 h-6 text-accent-cyan" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
@@ -138,11 +138,15 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
+import { useSocket } from '~/composables/useSocket'
 
 definePageMeta({
   middleware: 'auth'
 })
+
+const { socket } = useSocket()
+const apiBase = useRuntimeConfig().public.apiBase || 'http://localhost:3001'
 
 const cameras = ref([])
 const loading = ref(true)
@@ -162,10 +166,10 @@ const API_BASE = 'http://localhost:3001/api/cameras'
 const fetchCameras = async () => {
   loading.value = true
   try {
-    const res = await fetch(API_BASE)
+    const res = await fetch(`${apiBase}/api/cameras`)
     const data = await res.json()
     if (data.success) {
-      cameras.value = data.data
+      cameras.value = data.data.map(c => ({ ...c, liveFeed: null }))
     }
   } catch (err) {
     console.error('Failed to fetch cameras', err)
@@ -186,7 +190,7 @@ const closeModal = () => {
 const submitForm = async () => {
   isSubmitting.value = true
   try {
-    const res = await fetch(API_BASE, {
+    const res = await fetch(`${apiBase}/api/cameras`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(form.value)
@@ -209,7 +213,7 @@ const deleteCamera = async (id) => {
   if (!confirm('Are you sure you want to remove this camera?')) return
   
   try {
-    const res = await fetch(`${API_BASE}/${id}`, { method: 'DELETE' })
+    const res = await fetch(`${apiBase}/api/cameras/${id}`, { method: 'DELETE' })
     if (res.ok) {
       cameras.value = cameras.value.filter(c => c.id !== id)
     }
@@ -218,7 +222,38 @@ const deleteCamera = async (id) => {
   }
 }
 
-onMounted(() => {
-  fetchCameras()
+const handleLiveFrame = (data) => {
+  if (!data || !data.camera_id || !data.frame) return
+  const cam = cameras.value.find(c => c.id === data.camera_id)
+  if (cam) {
+    cam.liveFeed = data.frame
+    cam.status = 'Online' // Auto-set status to online if we receive frames
+  }
+}
+
+onMounted(async () => {
+  await fetchCameras()
+
+  const registerEvents = () => {
+    if (!socket.value) return
+    socket.value.on('live_frame', handleLiveFrame)
+  }
+
+  if (socket.value) {
+    registerEvents()
+  } else {
+    const interval = setInterval(() => {
+      if (socket.value) {
+        registerEvents()
+        clearInterval(interval)
+      }
+    }, 100)
+  }
+})
+
+onUnmounted(() => {
+  if (socket.value) {
+    socket.value.off('live_frame', handleLiveFrame)
+  }
 })
 </script>

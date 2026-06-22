@@ -1,5 +1,19 @@
 import { Request, Response } from 'express';
 import { pool } from '../db';
+import { getIo } from '../socket';
+
+export const handleLiveFrame = async (req: Request, res: Response) => {
+  try {
+    const { camera_id, frame } = req.body;
+    const io = getIo();
+    if (io && frame) {
+      io.emit('live_frame', { camera_id: camera_id || 1, frame });
+    }
+    res.status(200).json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false });
+  }
+};
 
 export const getCameras = async (req: Request, res: Response) => {
   try {
